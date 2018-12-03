@@ -9,7 +9,8 @@ from resnet.convlstm import *
 class ResNetPlusLSTM(resnet.ResNet):
 
     def __init__(self, block, layers, finetune=False, regional_pool=None, use_fc=False, use_convlstm=False,
-                 trainable_lstm_init=False, width=None, height=None, conv_lstm_skip=False, confidence=False):
+                 trainable_lstm_init=False, width=None, height=None, conv_lstm_skip=False, confidence=False,
+                 attention=False):
 
         super().__init__(block, layers)
 
@@ -37,6 +38,8 @@ class ResNetPlusLSTM(resnet.ResNet):
         #self.net = nn.Sequential( self.lin )
         #self.bla = nn.Sequential( nn.Linear())
 
+        self.attention = attention
+
         if not finetune:
             for param in self.layer1.parameters():
                 param.requires_grad = False
@@ -61,13 +64,23 @@ class ResNetPlusLSTM(resnet.ResNet):
         if confidence:
             self.conf_fc = nn.Linear(512 * block.expansion, 2)
 
+        if attention:
+            self.attn_fc = nn.Linear(2 * 512 * block.expansion, 1)
+        else:
+            self.attn_fc = None
+
         self.use_convlstm = use_convlstm
         if use_convlstm:
-            self.conv_lstm = ConvLSTMCell(input_dim=512*block.expansion, hidden_dim=512*block.expansion,
+            self.conv_lstm = ConvLSTMCell(input_dim=512*block.expansion * (2 if attention else 1),
+                                          hidden_dim=512*block.expansion,
                                           kernel_size=(3,3), bias=False)
             if self.trainable_lstm_init:
-                self.lstm_init_h = nn.Parameter(torch.zeros(1, self.conv_lstm.hidden_dim, height, width).type(torch.Tensor), requires_grad=True)
-                self.lstm_init_c = nn.Parameter(torch.zeros(1, self.conv_lstm.hidden_dim, height, width).type(torch.Tensor), requires_grad=True)
+                self.lstm_init_h = nn.Parameter(torch.normal(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
+                                                0.01*torch.ones(self.conv_lstm.hidden_dim).type(torch.Tensor))
+                                                , requires_grad=True)
+                self.lstm_init_c = nn.Parameter(torch.normal(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
+                                                0.01*torch.ones(self.conv_lstm.hidden_dim).type(torch.Tensor))
+                                                , requires_grad=True)
 
         self.fc_o = nn.Linear(512 * block.expansion, 1)
         self.fc_a = nn.Linear(512 * block.expansion, 1)
@@ -108,14 +121,56 @@ class ResNetPlusLSTM(resnet.ResNet):
             y = y.reshape([B, S, C, H, W])
             h_states = []
             if self.trainable_lstm_init:
-                h_state = self.lstm_init_h
-                c_state = self.lstm_init_c
+                # h_state = torch.stack([self.lstm_init_h for _ in range(B)], dim=0)
+                # c_state = torch.stack([self.lstm_init_c for _ in range(B)], dim=0)
+                # xW = y.shape[-1]
+                # xH = y.shape[-2]
+                c_state = torch.stack([torch.stack(
+                    [torch.stack([self.lstm_init_c for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in
+                                      range(B)], dim=0)
+                h_state = torch.stack([torch.stack(
+                    [torch.stack([self.lstm_init_h for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in
+                                      range(B)], dim=0)
             else:
                 h_state, c_state = self.conv_lstm.init_hidden(B, H, W)
 
             for s in range(S):
-                h_state, c_state = self.conv_lstm(y[:,s,:,:,:], (h_state, c_state))
+                if self.attention:
+                    if s > 0:
+                        h_last = torch.squeeze(self.avgpool(y[:,s,:,:,:]))
+                        # print("hstate: ", h_last.shape)
+                        es = []
+                        for h_old in h_states:
+                            h_old = torch.squeeze(self.avgpool(h_old))
+                            # print("h_old: ", h_old.shape)
+                            h_cat = torch.cat([h_last, h_old], dim=-1)
+                            # print("h_cat: ", h_cat.shape)
+                            e = self.attn_fc(h_cat)
+                            # print("e: ", e.shape)
+                            es.append(e)
+                        e_vec = torch.stack(es, dim=-1)
+                        alphas = torch.squeeze(F.softmax(e_vec, dim=-1))
+                        h_state_tensor = torch.stack(h_states, dim=-1)
+
+                        # print("alphas: ", alphas.shape)
+                        # print("alphas: ", alphas.view(B, 1, 1, 1, -1).shape)
+                        # print("states: ", h_state_tensor.shape)
+
+                        states_weighted = h_state_tensor * alphas.view(B, 1, 1, 1, -1)
+                        # print("stat_w: ", states_weighted.shape)
+                        context = states_weighted.sum(dim=-1)
+
+                    else:
+                        context = torch.zeros(y[:,s,:,:,:].shape).type(torch.Tensor).cuda()
+
+                    h_state, c_state = self.conv_lstm(torch.cat([y[:,s,:,:,:], context], dim=1), (h_state, c_state))
+
+                else:
+                    h_state, c_state = self.conv_lstm(y[:,s,:,:,:], (h_state, c_state))
                 h_states.append(h_state)
+
+            # exit(0)
+
             y = torch.stack(h_states, dim=1)
             y = y.reshape([B*S, C, H, W])
 
