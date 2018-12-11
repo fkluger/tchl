@@ -289,6 +289,7 @@ class KittiRawDatasetPP(Dataset):
         images = np.zeros((seq_length, 3, self.im_height, self.im_width)).astype(np.float32)
         offsets = np.zeros((seq_length, 1)).astype(np.float32)
         angles = np.zeros((seq_length, 1)).astype(np.float32)
+        Gs = np.zeros((seq_length, 3)).astype(np.float32)
 
         # t3 = time.time()
 
@@ -317,6 +318,9 @@ class KittiRawDatasetPP(Dataset):
             image_width = image.shape[1]
 
             h = data['horizon_hom']
+
+            if self.return_info:
+                Gs[i,:] = data['G'].squeeze()
 
             if self.augmentation:
 
@@ -394,6 +398,10 @@ class KittiRawDatasetPP(Dataset):
             sample['date'] = date
             sample['drive'] = drive
             sample['start'] = frames[0]
+            sample['K'] = np.array(data['K'])
+            sample['scale'] = data['scale']
+            sample['padding'] = data['padding']
+            sample['G'] = Gs
 
         return sample
 

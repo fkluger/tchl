@@ -4,6 +4,7 @@ from resnet.resnet_plus_lstm import resnet18rnn
 from datasets.kitti import KittiRawDatasetPP, WIDTH,  HEIGHT
 from resnet.train import Config
 import torch
+from torch import nn
 import datetime
 from torchvision import transforms
 import os
@@ -19,6 +20,9 @@ logger = logging.getLogger('matplotlib.animation')
 logger.setLevel(logging.DEBUG)
 hostname = platform.node()
 import argparse
+import glob
+from mpl_toolkits.mplot3d import Axes3D
+
 
 from utilities.gradcam import GradCam, GuidedBackprop
 # from utilities.gradcam_misc_functions import
@@ -30,6 +34,8 @@ parser.add_argument('--gradcam', dest='use_gradcam', action='store_true', help='
 parser.add_argument('--guided', dest='guided_gradcam', action='store_true', help='visualize with guided gradcam')
 parser.add_argument('--whole', dest='whole_sequence', action='store_true', help='')
 parser.add_argument('--seqlength', default=256, type=int, metavar='N', help='')
+parser.add_argument('--cpid', default=-1, type=int, metavar='N', help='')
+parser.add_argument('--lstm_mem', default=256, type=int, metavar='N', help='')
 parser.add_argument('--disable_mean_subtraction', dest='disable_mean_subtraction', action='store_true', help='visualize with gradcam')
 
 args = parser.parse_args()
@@ -66,9 +72,19 @@ whole_sequence = args.whole_sequence
 downscale = 2.
 
 if checkpoint_path is not None:
-    model = resnet18rnn(use_fc=True, use_convlstm=True).to(device)
-    checkpoint = torch.load(os.path.join(checkpoint_path, "model_best.ckpt"), map_location=lambda storage, loc: storage)
-    model.load_state_dict(checkpoint['state_dict'], strict=False)
+    model = resnet18rnn(load=False, use_fc=True, use_convlstm=True, lstm_mem=args.lstm_mem).to(device)
+    # model = nn.DataParallel(model)
+
+    if args.cpid == -1:
+        cp_path = os.path.join(checkpoint_path, "model_best.ckpt")
+    else:
+        cp_path_reg = os.path.join(checkpoint_path, "%03d_*.ckpt" % args.cpid)
+        cp_path = glob.glob(cp_path_reg)[0]
+
+    print("loading ", cp_path)
+
+    checkpoint = torch.load(cp_path, map_location=lambda storage, loc: storage)
+    model.load_state_dict(checkpoint['state_dict'], strict=True)
     model.eval()
 
 if args.use_gradcam:
@@ -91,6 +107,11 @@ elif 'athene' in hostname:
     root_dir = "/phys/intern/kluger/tmp/kitti/horizons"
     csv_base = "/home/kluger/tmp/kitti_split_3"
     pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
+elif 'hekate' in hostname:
+    target_base = "/data/kluger/checkpoints/horizon_sequences"
+    root_dir = "/data/kluger/datasets/kitti/horizons"
+    csv_base = "/home/kluger/tmp/kitti_split_3"
+    pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
 else:
     target_base = "/data/kluger/checkpoints/horizon_sequences"
     root_dir = "/data/kluger/datasets/kitti/horizons"
@@ -100,6 +121,8 @@ else:
 
 if downscale > 1:
     root_dir += "_s%.3f" % (1./downscale)
+
+# root_dir += "_ema0.100"
 
 pixel_mean = [0.362365, 0.377767, 0.366744]
 if args.disable_mean_subtraction:
@@ -113,11 +136,14 @@ tfs_val = transforms.Compose([
 im_width = int(WIDTH/downscale)
 im_height = int(HEIGHT/downscale)
 
-train_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height, im_width=im_width,
+train_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height,
+                                  im_width=im_width, return_info=False,
                                 csv_file=csv_base + "/train.csv", seq_length=seq_length, fill_up=False, transform=tfs_val)
-val_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height, im_width=im_width,
+val_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height,
+                                im_width=im_width, return_info=False,
                               csv_file=csv_base + "/val.csv", seq_length=seq_length, fill_up=False, transform=tfs_val)
-test_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height, im_width=im_width,
+test_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height,
+                                 im_width=im_width, return_info=False,
                               csv_file=csv_base + "/test.csv", seq_length=seq_length, fill_up=False, transform=tfs_val)
 
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
@@ -133,13 +159,12 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
 
 if set_type == 'val':
     loader = val_loader
-    result_folder = os.path.join(result_folder, "val/")
 elif set_type == 'test':
     loader = test_loader
-    result_folder = os.path.join(result_folder, "test/")
 else:
     loader = train_loader
-    result_folder = os.path.join(result_folder, "train/")
+
+result_folder = os.path.join(result_folder, "%d/" % args.lstm_mem)
 
 FFMpegWriter = manimation.writers['ffmpeg']
 metadata = dict(title='Movie Test', artist='Matplotlib',
@@ -166,18 +191,23 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
     angle_losses = []
     for idx, sample in enumerate(loader):
 
-        # if idx < 49: continue
-
         images = sample['images']
         offsets = sample['offsets']
         angles = sample['angles']
 
+        # K = sample['K']
+        # Gs = sample['G']
+
         print("idx ", idx)
         all_offsets = []
         all_offsets_estm = []
+        all_angles = []
+        all_angles_estm = []
 
         fig = plt.figure(figsize=(6.4, 3.0))
-        # print("figsize: ", plt.rcParams['figure.figsize'])
+        # ax = fig.add_subplot(111)
+        # fig3d = plt.figure()
+        # ax3d = fig3d.add_subplot(111, projection='3d')
 
         l1, = plt.plot([], [], '-', lw=2, c='#99C000')
         l2, = plt.plot([], [], '--', lw=2, c='#0083CC')
@@ -195,6 +225,7 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
                 angle = angles[0, si].detach().numpy().squeeze()
 
                 all_offsets += [-offset.copy()]
+                all_angles += [angle.copy()]
 
                 offset += 0.5
                 offset *= height
@@ -207,7 +238,7 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
                 true_h1 /= true_h1[2]
                 true_h2 /= true_h2[2]
 
-                fig.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=None, hspace=None)
+                plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=None, hspace=None)
                     # fig.set_dpi(plt.rcParams["figure.dpi"])
 
                 if checkpoint_path is not None:
@@ -221,6 +252,7 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
                         angle_estm = output_angles[0,si].cpu().detach().numpy().squeeze()
 
                     all_offsets_estm += [-offset_estm.copy()]
+                    all_angles_estm += [angle_estm.copy()]
 
                     offset_estm += 0.5
                     offset_estm *= height
@@ -232,6 +264,11 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
                     estm_h2 = np.cross(estm_hl, np.array([1, 0, -width]))
                     estm_h1 /= estm_h1[2]
                     estm_h2 /= estm_h2[2]
+
+                    # G = Gs.cpu().numpy().squeeze()[si,:]
+                    # print("G: ", G.shape)
+
+                    # ax3d.plot([G[0]], [G[1]], [G[2]], 'b.')
 
                     if gradcam is not None:
                         img_as_var = torch.autograd.Variable(images[0, si, :, :, :].clone().unsqueeze(0).unsqueeze(0),
@@ -303,5 +340,23 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
 
         plt.savefig(os.path.join(png_folder, "offsets_%03d.png" % idx), dpi=300)
         plt.savefig(os.path.join(svg_folder, "offsets_%03d.svg" % idx), dpi=300)
+        plt.close()
+
+        plt.figure()
+        x = np.arange(0, len(all_angles))
+        all_angles = np.array(all_angles)
+        all_angles_estm = np.array(all_angles_estm)
+        # print(all_offsets)
+        plt.plot(x, all_angles, '-', c='#99C000')
+        plt.plot(x, all_angles_estm, '-', c='#0083CC')
+        plt.ylim(-.4, .4)
+
+        errors = np.abs(all_angles-all_angles_estm)
+        err_mean = np.mean(errors).squeeze()
+        err_stdd = np.std(errors).squeeze()
+        plt.suptitle("error mean: %.4f -- stdd: %.4f" % (err_mean, err_stdd))
+
+        plt.savefig(os.path.join(png_folder, "angles_%03d.png" % idx), dpi=300)
+        plt.savefig(os.path.join(svg_folder, "angles_%03d.svg" % idx), dpi=300)
         plt.close()
 

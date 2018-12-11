@@ -5,6 +5,7 @@ import platform
 import glob
 import os
 import csv
+import time
 
 from datasets.kitti import KittiRawDatasetPP, Cutout, HEIGHT, WIDTH
 from torchvision import transforms
@@ -29,11 +30,12 @@ else:
     pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
 
 downscale = 2
-sequence_length = 1
+sequence_length = 256
 
 if downscale > 1:
     root_dir += "_s%.3f" % (1. / downscale)
 
+root_dir += "_ema0.100"
 
 pixel_mean = [0.362365, 0.377767, 0.366744]
 
@@ -52,12 +54,12 @@ tfs_val = transforms.Compose([
 
 
 # tfs=None
-train_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=None,
+train_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=None, fill_up=False, return_info=True,
                                   csv_file=csv_base + "/train.csv", seq_length=sequence_length,
                                   im_height=HEIGHT // downscale, im_width=WIDTH // downscale,
                                   scale=1. / downscale, transform=tfs)
-val_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=None, augmentation=False,
-                                csv_file=csv_base + "/val.csv", seq_length=sequence_length,
+val_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=None, augmentation=False, fill_up=False,
+                                csv_file=csv_base + "/val.csv", seq_length=sequence_length, return_info=True,
                                 im_height=HEIGHT // downscale, im_width=WIDTH // downscale,
                                 scale=1. / downscale, transform=tfs_val)
 
@@ -66,7 +68,7 @@ train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                            shuffle=True)
 val_loader = torch.utils.data.DataLoader(dataset=val_dataset,
                                            batch_size=1,
-                                           shuffle=True)
+                                           shuffle=False)
 
 
 if __name__ == '__main__':
@@ -75,29 +77,31 @@ if __name__ == '__main__':
         images = sample['images']
         offsets = sample['offsets']
         angles = sample['angles']
+        Gs = sample['G']
 
-        image = images.numpy()[0, 0, :, :, :].transpose((1, 2, 0))
-        width = image.shape[1]
-        height = image.shape[0]
+        for si in range(images.shape[1]):
 
-        offset = offsets[0, 0].numpy().squeeze()
-        angle = angles[0, 0].numpy().squeeze()
-        offset += 0.5
-        offset *= height
+            image = images.numpy()[0, si, :, :, :].transpose((1, 2, 0))
+            width = image.shape[1]
+            height = image.shape[0]
 
-        true_mp = np.array([width / 2., offset])
-        true_nv = np.array([np.sin(angle), np.cos(angle)])
-        true_hl = np.array([true_nv[0], true_nv[1], -np.dot(true_nv, true_mp)])
-        true_h1 = np.cross(true_hl, np.array([1, 0, 0]))
-        true_h2 = np.cross(true_hl, np.array([1, 0, -width]))
-        true_h1 /= true_h1[2]
-        true_h2 /= true_h2[2]
+            offset = offsets[0, si].numpy().squeeze()
+            angle = angles[0, si].numpy().squeeze()
+            offset += 0.5
+            offset *= height
 
-        plt.figure()
-        plt.imshow(image)
+            true_mp = np.array([width / 2., offset])
+            true_nv = np.array([np.sin(angle), np.cos(angle)])
+            true_hl = np.array([true_nv[0], true_nv[1], -np.dot(true_nv, true_mp)])
+            true_h1 = np.cross(true_hl, np.array([1, 0, 0]))
+            true_h2 = np.cross(true_hl, np.array([1, 0, -width]))
+            true_h1 /= true_h1[2]
+            true_h2 /= true_h2[2]
 
+            plt.figure()
+            plt.imshow(image)
 
-        plt.plot([true_h1[0], true_h2[0]], [true_h1[1], true_h2[1]], '-', lw=4, c='#99C000')
+            plt.plot([true_h1[0], true_h2[0]], [true_h1[1], true_h2[1]], '-', lw=4, c='#99C000')
 
-
-        plt.show()
+            plt.show()
+            time.sleep(0.5)

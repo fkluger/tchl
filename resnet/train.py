@@ -8,8 +8,8 @@ from torchvision import transforms
 from tensorboardX import SummaryWriter
 import datetime
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="1"
 import numpy as np
+import math
 import time
 import platform
 import shutil
@@ -102,9 +102,20 @@ def horizon_error(width, height):
     return f
 
 
+def calc_horizon_leftright(width, height):
+    wh = 0.5 * width*1./height
+
+    def f(offset, angle):
+        term2 = wh * torch.tan(torch.clamp(angle, -math.pi/3., math.pi/3.))
+        return offset + 0.5 + term2, offset + 0.5 - term2
+
+    return f
+
+
 class TemporalMSELoss(_Loss):
-    def __init__(self, size_average=True, reduce=True, reduction='elementwise_mean'):
+    def __init__(self, size_average=True, reduce=True, reduction='elementwise_mean', from_start=False):
         super(TemporalMSELoss, self).__init__(size_average, reduce, reduction)
+        self.from_start = from_start
 
     def forward(self, input, target):
 
@@ -113,9 +124,41 @@ class TemporalMSELoss(_Loss):
         input_diffs = []
         target_diffs = []
 
-        for s in range(1,S):
-            input_diffs += [input[:,s,:]-input[:,s-1,:]]
-            target_diffs += [target[:,s,:]-target[:,s-1,:]]
+        if self.from_start:
+            for s in range(1,S):
+                input_diffs += [input[:,s,:]-input[:,0,:]]
+                target_diffs += [target[:,s,:]-target[:,0,:]]
+        else:
+            for s in range(1,S):
+                input_diffs += [input[:,s,:]-input[:,s-1,:]]
+                target_diffs += [target[:,s,:]-target[:,s-1,:]]
+
+        target_diffs = torch.stack(target_diffs, dim=1)
+        input_diffs = torch.stack(input_diffs, dim=1)
+
+        return F.mse_loss(input_diffs, target_diffs, reduction=self.reduction)
+
+
+class MaxErrorLoss(_Loss):
+    def __init__(self, size_average=True, reduce=True, reduction='elementwise_mean', from_start=False):
+        super(MaxErrorLoss, self).__init__(size_average, reduce, reduction)
+        self.from_start = from_start
+
+    def forward(self, input, target):
+
+        S = input.shape[1]
+
+        input_diffs = []
+        target_diffs = []
+
+        if self.from_start:
+            for s in range(1,S):
+                input_diffs += [input[:,s,:]-input[:,0,:]]
+                target_diffs += [target[:,s,:]-target[:,0,:]]
+        else:
+            for s in range(1,S):
+                input_diffs += [input[:,s,:]-input[:,s-1,:]]
+                target_diffs += [target[:,s,:]-target[:,s-1,:]]
 
         target_diffs = torch.stack(target_diffs, dim=1)
         input_diffs = torch.stack(input_diffs, dim=1)
@@ -153,6 +196,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--net', default='res18', type=str, metavar='NET', help='network type')
     parser.add_argument('--set', default='kitti', type=str, metavar='DS', help='dataset')
+    parser.add_argument('--gpu', default='0', type=str, metavar='DS', help='dataset')
     parser.add_argument('--finetune', dest='finetune', action='store_true', help='finetune the CNN')
     parser.add_argument('--epochs', default=128, type=int, metavar='N', help='num epochs')
     parser.add_argument('--baselr', default=0.1 / 128, type=float, metavar='lr', help='base learning rate')
@@ -166,15 +210,24 @@ if __name__ == '__main__':
     parser.add_argument('--fc', dest='fc_layer', action='store_true', help='use FC layer')
     parser.add_argument('--convlstm', dest='conv_lstm', action='store_true', help='use Conv LSTM layer')
     parser.add_argument('--temploss', dest='temporal_loss', action='store_true', help='use temporal loss')
-    parser.add_argument('--workers', default=2, type=int, metavar='W', help='number of workers')
+    parser.add_argument('--temploss2', dest='temporal_loss_2', action='store_true', help='use temporal loss')
+    parser.add_argument('--templossonly', dest='temporal_loss_only', action='store_true', help='use temporal loss')
+    parser.add_argument('--workers', default=3, type=int, metavar='W', help='number of workers')
     parser.add_argument('--random_subsampling', default=1., type=float, metavar='S', help='random subsampling factor')
     parser.add_argument('--conv_lstm_skip', dest='conv_lstm_skip', action='store_true', help='skip connection')
     parser.add_argument('--trainable_lstm_init', dest='trainable_lstm_init', action='store_true', help='')
     parser.add_argument('--attention', dest='attention', action='store_true', help='')
     parser.add_argument('--confidence', dest='confidence', action='store_true', help='')
     parser.add_argument('--confidence_max_err', default=1e-4, type=float, metavar='S', help='random subsampling factor')
+    parser.add_argument('--angle_loss_weight', default=1., type=float, metavar='S', help='random subsampling factor')
+    parser.add_argument('--load', default=None, type=str, metavar='DS', help='dataset')
+    parser.add_argument('--eval', dest='eval', action='store_true', help='')
+    parser.add_argument('--max_error_loss', dest='max_error_loss', action='store_true', help='')
+    parser.add_argument('--no_fill_up', dest='no_fill_up', action='store_true', help='')
 
     args = parser.parse_args()
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     hostname = platform.node()
 
@@ -196,8 +249,8 @@ if __name__ == '__main__':
     else:
         assert False
 
-    WIDTH = DS.WIDTH
-    HEIGHT = DS.HEIGHT
+    WIDTH = DS.WIDTH // args.downscale
+    HEIGHT = DS.HEIGHT // args.downscale
 
     #
     # config.net_type = 'res18'
@@ -270,13 +323,15 @@ if __name__ == '__main__':
     else:
         assert False
 
-    model = nn.DataParallel(model)
+    # model = nn.DataParallel(model)
 
-    # if config.finetune_from is not None:
-    #     load_from_path = config.finetune_from + "/model_best.ckpt"
-    #     print("load weights from ", load_from_path)
-    #     checkpoint = torch.load(load_from_path, map_location=lambda storage, loc: storage)
-    #     model.load_state_dict(checkpoint['state_dict'], strict=False)
+    if args.load is not None:
+        load_from_path = args.load
+        print("load weights from ", load_from_path)
+        checkpoint = torch.load(load_from_path, map_location=lambda storage, loc: storage)
+        model.load_state_dict(checkpoint['state_dict'], strict=True)
+
+    model = nn.DataParallel(model)
 
     if args.loss == 'mse':
         criterion = nn.MSELoss()
@@ -285,7 +340,7 @@ if __name__ == '__main__':
     else:
         assert False
 
-    temp_criterion = TemporalMSELoss()
+    temp_criterion = TemporalMSELoss(from_start=args.temporal_loss_2)
 
     if args.optimizer == 'adam':
         optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=1e-4)
@@ -325,11 +380,11 @@ if __name__ == '__main__':
 
         train_dataset = DS.KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, random_subsampling=args.random_subsampling,
                                         csv_file=csv_base + "/train.csv", seq_length=args.seqlength,
-                                        im_height=HEIGHT//args.downscale, im_width=WIDTH//args.downscale,
+                                        im_height=HEIGHT, im_width=WIDTH, fill_up=(not args.no_fill_up),
                                           scale=1./args.downscale, transform=tfs)
         val_dataset = DS.KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False,
                                         csv_file=csv_base + "/val.csv", seq_length=args.seqlength,
-                                        im_height=HEIGHT//args.downscale, im_width=WIDTH//args.downscale,
+                                        im_height=HEIGHT, im_width=WIDTH, fill_up=(not args.no_fill_up),
                                           scale=1./args.downscale, transform=tfs_val)
     elif args.set == 'hlw':
 
@@ -373,136 +428,150 @@ if __name__ == '__main__':
     curr_batch_size = args.batch
     best_val_loss = 10000.
 
+    calc_hlr = calc_horizon_leftright(width=WIDTH, height=HEIGHT)
+
     for epoch in range(args.epochs):
 
         # if config.use_dropblock:
         #     model.set_dropblock_prob(1-1.*epoch/config.num_epochs*config.dropblock_drop_prob)
 
-        scheduler.step()
-        adjust_learning_rate(optimizer, scheduler.get_lr()[0])
+        if not args.eval:
+            scheduler.step()
+            adjust_learning_rate(optimizer, scheduler.get_lr()[0])
 
-        losses = []
-        offset_losses = []
-        angle_losses = []
-        temp_offset_losses = []
-        temp_angle_losses = []
-        confidence_losses = []
-
-        tt0 = time.time()
-
-        model.train()
-        for i, sample in enumerate(train_loader):
-        # for i in range(len(train_loader)):
-
-            # if i > 200: exit(0)
-
-            # sample = next(iter(train_loader))
-            images = sample['images'].to(device, non_blocking=True)
-            offsets = sample['offsets'].to(device, non_blocking=True)
-            angles = sample['angles'].to(device, non_blocking=True)
-
-            # Forward pass
-            tt1 = time.time()
-            if args.confidence:
-                output_offsets, output_angles, output_confidence = model(images, use_dropblock=False)
-                confidence_target = ConfidenceTarget(output_offsets.view(-1, 1), offsets.view(-1, 1))
-                confidence_loss = torch.nn.CrossEntropyLoss()(output_confidence.view(-1, 2), confidence_target)
-                confidence_losses += [confidence_loss]
-            else:
-                output_offsets, output_angles = model(images, use_dropblock=False)
-
-            # if i+1 < len(train_loader):
-            #     sample = next(iter(train_loader))
-
-            tt2 = time.time()
-            offset_loss = criterion(output_offsets, offsets)
-            angle_loss = criterion(output_angles, angles)
-            loss = offset_loss + angle_loss
-            if args.temporal_loss:
-                temp_offset_loss = temp_criterion(output_offsets, offsets)
-                temp_angle_loss = temp_criterion(output_angles, angles)
-                loss += temp_offset_loss + temp_angle_loss
-                temp_offset_losses.append(temp_offset_loss)
-                temp_angle_losses.append(temp_angle_loss)
-            tt3 = time.time()
-
-            if args.confidence:
-                loss += confidence_loss
-
-            # images = sample['images'].to(device, non_blocking=True)
-
-            # Backward and optimize
-            optimizer.zero_grad()
-            loss.backward()
-            tt4 = time.time()
-            # if config.gradient_clip > 0:
-            #     torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
-            optimizer.step()
-            tt5 = time.time()
-
-            # print('data loading : %f' % (tt01-tt0) )
-            # print('data to dev. : %f' % (tt1-tt01) )
-            # print('forward pass : %f' % (tt2-tt1) )
-            # print('loss calculat: %f' % (tt3-tt2) )
-            # print('backward pass: %f' % (tt4-tt3) )
-            # print('optimization : %f' % (tt5-tt4) )
-            # print("...")
-
-            # losses.append(loss.item())
-            losses.append(loss)
-            offset_losses.append(offset_loss)
-            angle_losses.append(angle_loss)
-
-            if (i+1) % 100 == 0:
-                # average_loss = np.mean(losses)
-                losses_tensor = torch.stack(losses, dim=0).view(-1)
-                average_loss = losses_tensor.mean().item()
-
-                offset_losses_tensor = torch.stack(offset_losses, dim=0).view(-1)
-                average_offset_loss = offset_losses_tensor.mean().item()
-                angle_losses_tensor = torch.stack(angle_losses, dim=0).view(-1)
-                average_angle_loss = angle_losses_tensor.mean().item()
-
-                # average_offset_loss = np.mean(offset_losses)
-                # average_angle_loss = np.mean(angle_losses)
-
-                num_iteration = epoch*total_step + i
-
-                if args.temporal_loss:
-                    # temp_average_offset_loss = np.mean(temp_offset_losses)
-                    # temp_average_angle_loss = np.mean(temp_angle_losses)
-                    temp_offset_losses_tensor = torch.stack(temp_offset_losses, dim=0).view(-1)
-                    temp_average_offset_loss = temp_offset_losses_tensor.mean().item()
-                    temp_angle_losses_tensor = torch.stack(temp_angle_losses, dim=0).view(-1)
-                    temp_average_angle_loss = temp_angle_losses_tensor.mean().item()
-
-                if args.confidence:
-                    confidence_losses_tensor = torch.stack(confidence_losses, dim=0).view(-1)
-                    average_confidence_loss = confidence_losses_tensor.mean().item()
-                    tensorboard_writer.add_scalar('train/confidence_loss', confidence_loss.item(), num_iteration)
-                    tensorboard_writer.add_scalar('train/confidence_loss_avg', average_confidence_loss, num_iteration)
-
-
-                print ("Epoch [{}/{}], Step [{}/{}] Losses: {:.6f} {:.6f} {:.6f}, Avg.: {:.6f} {:.6f} {:.6f}"
-                       .format(epoch+1, args.epochs, i+1, total_step, offset_loss.item(), angle_loss.item(), loss.item(),
-                               average_offset_loss, average_angle_loss, average_loss), end="\r")
-
-                tensorboard_writer.add_scalar('train/loss', loss.item(), num_iteration)
-                tensorboard_writer.add_scalar('train/offset_loss', offset_loss.item(), num_iteration)
-                tensorboard_writer.add_scalar('train/angle_loss', angle_loss.item(), num_iteration)
-                tensorboard_writer.add_scalar('train/loss_avg', average_loss, num_iteration)
-                tensorboard_writer.add_scalar('train/offset_loss_avg', average_offset_loss, num_iteration)
-                tensorboard_writer.add_scalar('train/angle_loss_avg', average_angle_loss, num_iteration)
-                if args.temporal_loss:
-                    tensorboard_writer.add_scalar('train/temp_offset_loss', temp_offset_loss.item(), num_iteration)
-                    tensorboard_writer.add_scalar('train/temp_angle_loss', temp_angle_loss.item(), num_iteration)
-                    tensorboard_writer.add_scalar('train/temp_offset_loss_avg', temp_average_offset_loss, num_iteration)
-                    tensorboard_writer.add_scalar('train/temp_angle_loss_avg', temp_average_angle_loss, num_iteration)
-
-                tensorboard_writer.add_scalar('learning_rate', scheduler.get_lr()[0], num_iteration)
-                # tensorboard_writer.add_histogram('gradients', np.concatenate([x.grad.cpu().detach().numpy().flatten() for x in model.parameters() if x is not None]), num_iteration)
+            losses = []
+            offset_losses = []
+            angle_losses = []
+            temp_offset_losses = []
+            temp_angle_losses = []
+            confidence_losses = []
 
             tt0 = time.time()
+
+            model.train()
+            for i, sample in enumerate(train_loader):
+            # for i in range(len(train_loader)):
+
+                # if i > 200: exit(0)
+
+                # sample = next(iter(train_loader))
+                images = sample['images'].to(device, non_blocking=True)
+                offsets = sample['offsets'].to(device, non_blocking=True)
+                angles = sample['angles'].to(device, non_blocking=True)
+
+                # Forward pass
+                if args.confidence:
+                    output_offsets, output_angles, output_confidence = model(images, use_dropblock=False)
+                    confidence_target = ConfidenceTarget(output_offsets.view(-1, 1), offsets.view(-1, 1))
+                    confidence_loss = torch.nn.CrossEntropyLoss()(output_confidence.view(-1, 2), confidence_target)
+                    confidence_losses += [confidence_loss]
+                else:
+                    output_offsets, output_angles = model(images, use_dropblock=False)
+
+                offset_loss = criterion(output_offsets, offsets)
+                angle_loss = criterion(output_angles, angles)
+
+                loss = 0
+
+                if args.max_error_loss:
+                    hl_true, hr_true = calc_hlr(offsets, angles)
+                    hl_estm, hr_estm = calc_hlr(output_offsets, output_angles)
+                    hl_err = F.l1_loss(hl_estm, hl_true, size_average=False, reduce=False)
+                    hr_err = F.l1_loss(hr_estm, hr_true, size_average=False, reduce=False)
+                    h_errs = torch.max(hl_err, hr_err)
+                    loss += torch.mean(h_errs)
+
+                else:
+                    if args.temporal_loss_only:
+                        loss = 0
+                    else:
+                        loss += offset_loss + angle_loss * args.angle_loss_weight
+
+                if args.temporal_loss:
+                    temp_offset_loss = temp_criterion(output_offsets, offsets)
+                    temp_angle_loss = temp_criterion(output_angles, angles)
+                    loss += temp_offset_loss + temp_angle_loss * args.angle_loss_weight
+                    temp_offset_losses.append(temp_offset_loss)
+                    temp_angle_losses.append(temp_angle_loss)
+                tt3 = time.time()
+
+                if args.confidence:
+                    loss += confidence_loss
+
+                # images = sample['images'].to(device, non_blocking=True)
+
+                # Backward and optimize
+                optimizer.zero_grad()
+                loss.backward()
+                tt4 = time.time()
+                # if config.gradient_clip > 0:
+                #     torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
+                optimizer.step()
+                tt5 = time.time()
+
+                # print('data loading : %f' % (tt01-tt0) )
+                # print('data to dev. : %f' % (tt1-tt01) )
+                # print('forward pass : %f' % (tt2-tt1) )
+                # print('loss calculat: %f' % (tt3-tt2) )
+                # print('backward pass: %f' % (tt4-tt3) )
+                # print('optimization : %f' % (tt5-tt4) )
+                # print("...")
+
+                # losses.append(loss.item())
+                losses.append(loss)
+                offset_losses.append(offset_loss)
+                angle_losses.append(angle_loss)
+
+                if (i+1) % 100 == 0:
+                    # average_loss = np.mean(losses)
+                    losses_tensor = torch.stack(losses, dim=0).view(-1)
+                    average_loss = losses_tensor.mean().item()
+
+                    offset_losses_tensor = torch.stack(offset_losses, dim=0).view(-1)
+                    average_offset_loss = offset_losses_tensor.mean().item()
+                    angle_losses_tensor = torch.stack(angle_losses, dim=0).view(-1)
+                    average_angle_loss = angle_losses_tensor.mean().item()
+
+                    # average_offset_loss = np.mean(offset_losses)
+                    # average_angle_loss = np.mean(angle_losses)
+
+                    num_iteration = epoch*total_step + i
+
+                    if args.temporal_loss:
+                        # temp_average_offset_loss = np.mean(temp_offset_losses)
+                        # temp_average_angle_loss = np.mean(temp_angle_losses)
+                        temp_offset_losses_tensor = torch.stack(temp_offset_losses, dim=0).view(-1)
+                        temp_average_offset_loss = temp_offset_losses_tensor.mean().item()
+                        temp_angle_losses_tensor = torch.stack(temp_angle_losses, dim=0).view(-1)
+                        temp_average_angle_loss = temp_angle_losses_tensor.mean().item()
+
+                    if args.confidence:
+                        confidence_losses_tensor = torch.stack(confidence_losses, dim=0).view(-1)
+                        average_confidence_loss = confidence_losses_tensor.mean().item()
+                        tensorboard_writer.add_scalar('train/confidence_loss', confidence_loss.item(), num_iteration)
+                        tensorboard_writer.add_scalar('train/confidence_loss_avg', average_confidence_loss, num_iteration)
+
+
+                    print ("Epoch [{}/{}], Step [{}/{}] Losses: {:.6f} {:.6f} {:.6f}, Avg.: {:.6f} {:.6f} {:.6f}"
+                           .format(epoch+1, args.epochs, i+1, total_step, offset_loss.item(), angle_loss.item(), loss.item(),
+                                   average_offset_loss, average_angle_loss, average_loss), end="\r")
+
+                    tensorboard_writer.add_scalar('train/loss', loss.item(), num_iteration)
+                    tensorboard_writer.add_scalar('train/offset_loss', offset_loss.item(), num_iteration)
+                    tensorboard_writer.add_scalar('train/angle_loss', angle_loss.item(), num_iteration)
+                    tensorboard_writer.add_scalar('train/loss_avg', average_loss, num_iteration)
+                    tensorboard_writer.add_scalar('train/offset_loss_avg', average_offset_loss, num_iteration)
+                    tensorboard_writer.add_scalar('train/angle_loss_avg', average_angle_loss, num_iteration)
+                    if args.temporal_loss:
+                        tensorboard_writer.add_scalar('train/temp_offset_loss', temp_offset_loss.item(), num_iteration)
+                        tensorboard_writer.add_scalar('train/temp_angle_loss', temp_angle_loss.item(), num_iteration)
+                        tensorboard_writer.add_scalar('train/temp_offset_loss_avg', temp_average_offset_loss, num_iteration)
+                        tensorboard_writer.add_scalar('train/temp_angle_loss_avg', temp_average_angle_loss, num_iteration)
+
+                    tensorboard_writer.add_scalar('learning_rate', scheduler.get_lr()[0], num_iteration)
+                    # tensorboard_writer.add_histogram('gradients', np.concatenate([x.grad.cpu().detach().numpy().flatten() for x in model.parameters() if x is not None]), num_iteration)
+
+                tt0 = time.time()
 
 
         # test on validation set:
@@ -532,11 +601,11 @@ if __name__ == '__main__':
 
                 offset_loss = criterion(output_offsets, offsets)
                 angle_loss = criterion(output_angles, angles)
-                loss = offset_loss + angle_loss
+                loss = offset_loss + angle_loss * args.angle_loss_weight
                 if args.temporal_loss:
                     temp_offset_loss = temp_criterion(output_offsets, offsets)
                     temp_angle_loss = temp_criterion(output_angles, angles)
-                    loss += temp_offset_loss + temp_angle_loss
+                    loss += temp_offset_loss + temp_angle_loss * args.angle_loss_weight
                     temp_offset_losses.append(temp_offset_loss.item())
                     temp_angle_losses.append(temp_angle_loss.item())
 
@@ -579,31 +648,38 @@ if __name__ == '__main__':
 
             err_cutoff = 0.25
 
-            for i in range(num_values):
-                fraction = (i + 1) * 1.0 / num_values
-                value = error_arr[i]
-                plot_points[i, 1] = fraction
-                plot_points[i, 0] = value
-                if i > 0:
-                    lastvalue = error_arr[i - 1]
-                    if lastvalue < err_cutoff and value > err_cutoff:
-                        midfraction = (lastvalue * plot_points[i - 1, 1] + value * fraction) / (value + lastvalue)
+            midfraction = 1.
 
-            if plot_points[-1, 0] < err_cutoff:
-                plot_points = np.vstack([plot_points, np.array([err_cutoff, 1])])
-            else:
-                plot_points = np.vstack([plot_points, np.array([err_cutoff, midfraction])])
+            try:
+                for i in range(num_values):
+                    fraction = (i + 1) * 1.0 / num_values
+                    value = error_arr[i]
+                    plot_points[i, 1] = fraction
+                    plot_points[i, 0] = value
+                    if i > 0:
+                        lastvalue = error_arr[i - 1]
+                        if lastvalue < err_cutoff and value > err_cutoff:
+                            midfraction = (lastvalue * plot_points[i - 1, 1] + value * fraction) / (value + lastvalue)
 
-            sorting = np.argsort(plot_points[:, 0])
-            plot_points = plot_points[sorting, :]
+                if plot_points[-1, 0] < err_cutoff:
+                    plot_points = np.vstack([plot_points, np.array([err_cutoff, 1])])
+                else:
+                    plot_points = np.vstack([plot_points, np.array([err_cutoff, midfraction])])
 
-            auc = sklearn.metrics.auc(plot_points[plot_points[:, 0] <= err_cutoff, 0],
-                                      plot_points[plot_points[:, 0] <= err_cutoff, 1])
-            auc = auc / err_cutoff
+                sorting = np.argsort(plot_points[:, 0])
+                plot_points = plot_points[sorting, :]
 
+                auc = sklearn.metrics.auc(plot_points[plot_points[:, 0] <= err_cutoff, 0],
+                                          plot_points[plot_points[:, 0] <= err_cutoff, 1])
+                auc = auc / err_cutoff
+            except:
+                auc = 0
 
             print("\nValidation [{}/{}],  Avg.: {:.4f} {:.4f} {:.4f} {:.4f}"
                   .format(epoch + 1, args.epochs, average_offset_loss, average_angle_loss, average_loss, auc))
+
+            if args.eval:
+                exit(0)
 
             tensorboard_writer.add_scalar('val/loss_avg', average_loss, num_iteration)
             tensorboard_writer.add_scalar('val/offset_loss_avg', average_offset_loss, num_iteration)
@@ -621,7 +697,7 @@ if __name__ == '__main__':
         save_checkpoint({
                 'epoch': epoch,
                 'args': args,
-                'state_dict': model.state_dict(),
+                'state_dict': model.module.state_dict(),
                 'val_loss': average_loss,
                 'optimizer' : optimizer.state_dict(),
                 # 'all_gradients' : np.concatenate([x.grad.cpu().detach().numpy().flatten() for x in model.parameters() if x is not None])

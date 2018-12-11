@@ -10,7 +10,7 @@ class ResNetPlusLSTM(resnet.ResNet):
 
     def __init__(self, block, layers, finetune=False, regional_pool=None, use_fc=False, use_convlstm=False,
                  trainable_lstm_init=False, width=None, height=None, conv_lstm_skip=False, confidence=False,
-                 attention=False):
+                 attention=False, lstm_mem=0):
 
         super().__init__(block, layers)
 
@@ -25,6 +25,8 @@ class ResNetPlusLSTM(resnet.ResNet):
         self.conv_lstm_skip = conv_lstm_skip
 
         self.confidence= confidence
+
+        self.lstm_mem = lstm_mem
 
         if regional_pool is not None:
             self.regional_pool = True
@@ -135,6 +137,10 @@ class ResNetPlusLSTM(resnet.ResNet):
                 h_state, c_state = self.conv_lstm.init_hidden(B, H, W)
 
             for s in range(S):
+
+                if self.lstm_mem > 0 and s % self.lstm_mem == 0:
+                    h_state, c_state = self.conv_lstm.init_hidden(B, H, W)
+
                 if self.attention:
                     if s > 0:
                         h_last = torch.squeeze(self.avgpool(y[:,s,:,:,:]))
@@ -161,7 +167,7 @@ class ResNetPlusLSTM(resnet.ResNet):
                         context = states_weighted.sum(dim=-1)
 
                     else:
-                        context = torch.zeros(y[:,s,:,:,:].shape).type(torch.Tensor).cuda()
+                        context = torch.zeros(y[:,s,:,:,:].shape).type(torch.Tensor)#.cuda()
 
                     h_state, c_state = self.conv_lstm(torch.cat([y[:,s,:,:,:], context], dim=1), (h_state, c_state))
 
