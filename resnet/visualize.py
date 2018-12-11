@@ -42,17 +42,6 @@ args = parser.parse_args()
 
 args.disable_mean_subtraction = True
 
-# checkpoint_path = "/data/kluger/checkpoints/horizon_sequences/res18_fine/1/b32_180910-133634/009_0.001100.ckpt"
-# checkpoint_path = "/data/kluger/checkpoints/horizon_sequences/res18_fine/16/b2_180911-104511/007_0.001957.ckpt"
-# checkpoint_path = "/data/kluger/checkpoints/horizon_sequences/res18_fine/1/b2_180913-104954/051_0.000588.ckpt"
-# checkpoint_path = "/tnt/data/kluger/checkpoints/horizon_sequences/res18_fine/1/b2_180914-104717/006_0.000127.ckpt"
-# checkpoint_path = "/data/kluger/checkpoints/horizon_sequences/res18_fine/1/b2_180914-143448/003_0.001422.ckpt"
-# checkpoint_path = "/data/kluger/checkpoints/horizon_sequences/res18_fine/1/b2_180915-184354/017_0.001131.ckpt"
-# checkpoint_path = "/data/kluger/checkpoints/horizon_sequences/res18_fine/2/b2_180916-101747/model_best.ckpt"
-# checkpoint_path = "/data/kluger/checkpoints/horizon_sequences/res18_fine/d1/1/b2_180919-215524/"
-# checkpoint_path = "/data/kluger/checkpoints/horizon_sequences/res18_fine/d1/4/b2_180920-172021/"
-# checkpoint_path = "/data/kluger/checkpoints/horizon_sequences/res18_fine/d1/1/b2_180921-223047/"
-
 checkpoint_path = args.load if not (args.load == '') else None
 set_type = args.set
 

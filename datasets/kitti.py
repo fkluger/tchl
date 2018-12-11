@@ -194,7 +194,7 @@ class Cutout(object):
 class KittiRawDatasetPP(Dataset):
 
     def __init__(self, csv_file, root_dir, seq_length, augmentation=True, pdf_file=None, return_info=False, fill_up=True,
-                 im_width=WIDTH, im_height=HEIGHT, scale=1., transform=None, random_subsampling=1.):
+                 im_width=WIDTH, im_height=HEIGHT, scale=1., transform=None, random_subsampling=1., get_split_data=False):
 
         self.seq_length = seq_length
         self.scale = scale
@@ -203,6 +203,8 @@ class KittiRawDatasetPP(Dataset):
         self.random_subsampling = random_subsampling
 
         self.seq_length_os = int(self.seq_length * random_subsampling)
+
+        self.get_split_data = get_split_data
 
         # self.datasets = {}
         #
@@ -289,6 +291,8 @@ class KittiRawDatasetPP(Dataset):
         images = np.zeros((seq_length, 3, self.im_height, self.im_width)).astype(np.float32)
         offsets = np.zeros((seq_length, 1)).astype(np.float32)
         angles = np.zeros((seq_length, 1)).astype(np.float32)
+        offsets_ema = np.zeros((seq_length, 1)).astype(np.float32)
+        angles_ema = np.zeros((seq_length, 1)).astype(np.float32)
         Gs = np.zeros((seq_length, 3)).astype(np.float32)
 
         # t3 = time.time()

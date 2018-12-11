@@ -120,9 +120,16 @@ for date in dates:
                 offset_ema = offset * ema_alpha + (1-ema_alpha) * offset_ema
                 angle_ema = angle * ema_alpha + (1-ema_alpha) * angle_ema
 
+            offset_ema_ = 0.5 + offset_ema
+            offset_ema_ *= HEIGHT
+
+            mp = np.array([WIDTH / 2., offset_ema_])
+            nv = np.array([np.sin(angle_ema), np.cos(angle_ema)])
+            h_ema = np.array([nv[0], nv[1], -np.dot(nv, mp)])
+
             data = {'image': padded_image, 'horizon_hom': h, 'horizon_p1': hp1, 'horizon_p2': hp2, 'offset': offset,
-                    'angle': angle, 'offset_ema': offset_ema, 'angle_ema': angle_ema, 'scale': scale,
-                    'padding': (pad_w1, pad_w2, pad_h1, pad_h2), 'G': G_cam, 'K': K}
+                    'angle': angle, 'offset_ema': offset_ema, 'angle_ema': angle_ema, 'horizon_hom_ema': h_ema,
+                    'scale': scale, 'padding': (pad_w1, pad_w2, pad_h1, pad_h2), 'G': G_cam, 'K': K}
 
             pickle_file = target_dir + "/%06d.pkl" % idx
 
