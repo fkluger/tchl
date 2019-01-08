@@ -33,6 +33,7 @@ parser.add_argument('--set', '-s', default='val', type=str, metavar='PATH', help
 parser.add_argument('--gradcam', dest='use_gradcam', action='store_true', help='visualize with gradcam')
 parser.add_argument('--guided', dest='guided_gradcam', action='store_true', help='visualize with guided gradcam')
 parser.add_argument('--whole', dest='whole_sequence', action='store_true', help='')
+parser.add_argument('--ema', default=0., type=float, metavar='N', help='')
 parser.add_argument('--seqlength', default=256, type=int, metavar='N', help='')
 parser.add_argument('--cpid', default=-1, type=int, metavar='N', help='')
 parser.add_argument('--lstm_mem', default=256, type=int, metavar='N', help='')
@@ -46,7 +47,7 @@ checkpoint_path = args.load if not (args.load == '') else None
 set_type = args.set
 
 if checkpoint_path is None:
-    result_folder = "/home/kluger/tmp/kitti_horizon_videos/" + set_type + "/"
+    result_folder = "/home/kluger/tmp/kitti_horizon_videos_2/" + set_type + "/"
 else:
     result_folder = os.path.join(checkpoint_path, "results/" + set_type + "/")
 
@@ -111,7 +112,8 @@ else:
 if downscale > 1:
     root_dir += "_s%.3f" % (1./downscale)
 
-# root_dir += "_ema0.100"
+if args.ema > 0.:
+    root_dir += "_ema%.3f" % args.ema
 
 pixel_mean = [0.362365, 0.377767, 0.366744]
 if args.disable_mean_subtraction:
@@ -126,13 +128,13 @@ im_width = int(WIDTH/downscale)
 im_height = int(HEIGHT/downscale)
 
 train_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height,
-                                  im_width=im_width, return_info=False,
+                                  im_width=im_width, return_info=False, get_split_data=(args.ema > 0.),
                                 csv_file=csv_base + "/train.csv", seq_length=seq_length, fill_up=False, transform=tfs_val)
 val_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height,
-                                im_width=im_width, return_info=False,
+                                im_width=im_width, return_info=False, get_split_data=(args.ema > 0.),
                               csv_file=csv_base + "/val.csv", seq_length=seq_length, fill_up=False, transform=tfs_val)
 test_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height,
-                                 im_width=im_width, return_info=False,
+                                 im_width=im_width, return_info=False, get_split_data=(args.ema > 0.),
                               csv_file=csv_base + "/test.csv", seq_length=seq_length, fill_up=False, transform=tfs_val)
 
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
@@ -183,6 +185,9 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
         images = sample['images']
         offsets = sample['offsets']
         angles = sample['angles']
+        if args.ame > 0:
+            offsets_ema = sample['offsets_ema']
+            angles_ema = sample['angles_ema']
 
         # K = sample['K']
         # Gs = sample['G']
@@ -200,6 +205,8 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
 
         l1, = plt.plot([], [], '-', lw=2, c='#99C000')
         l2, = plt.plot([], [], '--', lw=2, c='#0083CC')
+        if args.ema > 0:
+            l3, = plt.plot([], [], '--', lw=2, c='#fdca00')
 
         with writer.saving(fig, video_folder + "%s%05d.mp4" % (("guided-" if args.guided_gradcam else "") + ("gradcam_" if args.use_gradcam else ""), idx), 300):
             if whole_sequence and checkpoint_path is not None:
@@ -226,6 +233,24 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
                 true_h2 = np.cross(true_hl, np.array([1, 0, -width]))
                 true_h1 /= true_h1[2]
                 true_h2 /= true_h2[2]
+
+                if args.ema > 0:
+                    offset_ema = offsets_ema[0, si].detach().numpy().squeeze()
+                    angle_ema = angles_ema[0, si].detach().numpy().squeeze()
+
+                    # all_offsets += [-offset.copy()]
+                    # all_angles += [angle.copy()]
+
+                    offset_ema += 0.5
+                    offset_ema *= height
+
+                    true_mp_ema = np.array([width/2., offset_ema])
+                    true_nv_ema = np.array([np.sin(angle_ema), np.cos(angle_ema)])
+                    true_hl_ema = np.array([true_nv_ema[0], true_nv_ema[1], -np.dot(true_nv_ema, true_mp_ema)])
+                    true_h1_ema = np.cross(true_hl_ema, np.array([1, 0, 0]))
+                    true_h2_ema = np.cross(true_hl_ema, np.array([1, 0, -width]))
+                    true_h1_ema /= true_h1_ema[2]
+                    true_h2_ema /= true_h2_ema[2]
 
                 plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=None, hspace=None)
                     # fig.set_dpi(plt.rcParams["figure.dpi"])
@@ -297,6 +322,10 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
                 plt.autoscale(False)
 
                 l1.set_data([true_h1[0], true_h2[0]], [true_h1[1], true_h2[1]])
+
+                if args.ema > 0:
+                    l3.set_data([true_h1_ema[0], true_h2_ema[0]], [true_h1_ema[1], true_h2_ema[1]])
+
                 if checkpoint_path is not None:
                     l2.set_data([estm_h1[0], estm_h2[0]], [estm_h1[1], estm_h2[1]])
 

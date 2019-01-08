@@ -191,6 +191,7 @@ class Cutout(object):
         return img
 
 
+
 class KittiRawDatasetPP(Dataset):
 
     def __init__(self, csv_file, root_dir, seq_length, augmentation=True, pdf_file=None, return_info=False, fill_up=True,
@@ -322,6 +323,7 @@ class KittiRawDatasetPP(Dataset):
             image_width = image.shape[1]
 
             h = data['horizon_hom']
+            h_ema = data['horizon_hom_ema'] if self.get_split_data else h
 
             if self.return_info:
                 Gs[i,:] = data['G'].squeeze()
@@ -329,12 +331,19 @@ class KittiRawDatasetPP(Dataset):
             if self.augmentation:
 
                 h = np.array(Rt.I.T * np.matrix(h).T).squeeze()
+                h_ema = np.array(Rt.I.T * np.matrix(h_ema).T).squeeze()
 
                 angle = np.arctan2(h[0], h[1])
                 if angle > np.pi / 2:
                     angle -= np.pi
                 elif angle < -np.pi / 2:
                     angle += np.pi
+
+                angle_ema = np.arctan2(h_ema[0], h_ema[1])
+                if angle_ema > np.pi / 2:
+                    angle_ema -= np.pi
+                elif angle_ema < -np.pi / 2:
+                    angle_ema += np.pi
 
                 # offset = data['offset']
                 # angle = data['angle']
@@ -345,9 +354,9 @@ class KittiRawDatasetPP(Dataset):
                 image = cv2.warpAffine(image, M, (0, 0), borderMode=cv2.BORDER_REPLICATE)
 
                 if self.augmentation and np.random.uniform(0., 1.) > 0.5:
-                    image = cv2.flip( image, 1 )
+                    image = cv2.flip(image, 1)
                     angle *= -1
-
+                    angle_ema *= -1
 
                 # image = ndimage.interpolation.rotate(image, rotation, reshape=False, mode='nearest')
                 # image = ndimage.interpolation.shift(image, shift, mode='nearest')
@@ -356,12 +365,22 @@ class KittiRawDatasetPP(Dataset):
                 offset = data['offset']
                 angle = data['angle']
 
+                offset_ema = data['offset_ema'] if self.get_split_data else offset
+                angle_ema = data['angle_ema'] if self.get_split_data else angle
+
             hp1 = np.cross(h, np.array([1, 0, 0]))
             hp2 = np.cross(h, np.array([1, 0, -image_width]))
             hp1 /= hp1[2]
             hp2 /= hp2[2]
 
             offset = (0.5 * (hp1[1] + hp2[1])) / self.im_height - 0.5
+
+            hp1 = np.cross(h_ema, np.array([1, 0, 0]))
+            hp2 = np.cross(h_ema, np.array([1, 0, -image_width]))
+            hp1 /= hp1[2]
+            hp2 /= hp2[2]
+
+            offset_ema = (0.5 * (hp1[1] + hp2[1])) / self.im_height - 0.5
 
             # image = np.transpose(image, [2, 0, 1])
 
@@ -373,6 +392,9 @@ class KittiRawDatasetPP(Dataset):
             images[i,:,:,:] = image
             offsets[i] = offset
             angles[i] = angle
+
+            offsets_ema[i] = offset_ema
+            angles_ema[i] = angle_ema
 
         if self.fill_up:
             start = len(dataset)
@@ -398,6 +420,11 @@ class KittiRawDatasetPP(Dataset):
         # print(t4-t3)
 
         sample = {'images': images, 'offsets': offsets, 'angles': angles}
+
+        if self.get_split_data:
+            sample['offsets_ema'] = offset_ema
+            sample['angles_ema'] = angles_ema
+
         if self.return_info:
             sample['date'] = date
             sample['drive'] = drive
