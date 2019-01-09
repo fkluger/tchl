@@ -24,7 +24,7 @@ class ResNetPlusLSTM(resnet.ResNet):
         self.trainable_lstm_init = trainable_lstm_init
         self.conv_lstm_skip = conv_lstm_skip
 
-        self.confidence= confidence
+        self.confidence = confidence
 
         self.lstm_mem = lstm_mem
 
@@ -60,14 +60,9 @@ class ResNetPlusLSTM(resnet.ResNet):
         if confidence:
             self.conf_fc = nn.Linear(512 * block.expansion, 2)
 
-        if attention:
-            self.attn_fc = nn.Linear(2 * 512 * block.expansion, 1)
-        else:
-            self.attn_fc = None
-
         self.use_convlstm = use_convlstm
         if use_convlstm:
-            self.conv_lstm = ConvLSTMCell(input_dim=512*block.expansion * (2 if attention else 1),
+            self.conv_lstm = ConvLSTMCell(input_dim=512*block.expansion,
                                           hidden_dim=512*block.expansion,
                                           kernel_size=(3,3), bias=False)
             if self.trainable_lstm_init:
