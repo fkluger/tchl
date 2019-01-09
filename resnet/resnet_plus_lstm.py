@@ -80,7 +80,7 @@ class ConvLSTMHead(nn.Module):
         angle = self.fc_a(x)
 
         return offset, angle
-    
+
 
 class ResNetPlusLSTM(resnet.ResNet):
 
@@ -92,6 +92,8 @@ class ResNetPlusLSTM(resnet.ResNet):
 
         if regional_pool is not None:
             assert False, "regional_pool: not implemented"
+        if confidence:
+            assert False, "confidence: not implemented"
 
         self.dropblock = DropBlock2D()
 
@@ -223,11 +225,6 @@ class ResNetPlusLSTM(resnet.ResNet):
 
         y = self.avgpool(y)
 
-        if self.regional_pool:
-            y = self.rp_conv(y)
-            y = self.rp_bn(y)
-            y = self.relu(y)
-
         x = y.reshape([B, S, y.shape[1] * y.shape[2] * y.shape[3]])
 
         if self.use_fc:
@@ -243,13 +240,7 @@ class ResNetPlusLSTM(resnet.ResNet):
         offset = self.fc_o(x)
         angle = self.fc_a(x)
 
-        if self.confidence:
-            conf = self.conf_fc(x)
-            # conf = F.softmax(conf, -1)
-            return offset, angle, conf
-
-        else:
-            return offset, angle
+        return offset, angle
 
     def forward_convs_single(self, x):
         x = x.unsqueeze(0)
