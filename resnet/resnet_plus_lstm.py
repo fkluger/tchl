@@ -17,7 +17,7 @@ class ConvLSTMHead(nn.Module):
                                       hidden_dim=hidden_dim,
                                       kernel_size=(3, 3), bias=False)
 
-        self.fc = nn.Linear(2 * hidden_dim, hidden_dim)
+        self.fc = nn.Linear(hidden_dim, hidden_dim)
         self.fc_o = nn.Linear(hidden_dim, 1)
         self.fc_a = nn.Linear(hidden_dim, 1)
 
@@ -73,7 +73,10 @@ class ConvLSTMHead(nn.Module):
 
         x = y.reshape([B, S, y.shape[1] * y.shape[2] * y.shape[3]])
 
-        x = self.fc_(x)
+        # print(B, S, C, H, W)
+        # print(x.shape)
+
+        x = self.fc(x)
         x = nn.functional.relu(x)
 
         offset = self.fc_o(x)
@@ -109,6 +112,8 @@ class ResNetPlusLSTM(resnet.ResNet):
 
         self.lstm_mem = lstm_mem
 
+        self.head = None
+
         if regional_pool is not None:
             self.regional_pool = True
             self.rp_conv = nn.Conv2d(512 * block.expansion, 512 * block.expansion, kernel_size=regional_pool, stride=1, padding=0,
@@ -142,20 +147,27 @@ class ResNetPlusLSTM(resnet.ResNet):
             self.conf_fc = nn.Linear(512 * block.expansion, 2)
 
         self.use_convlstm = use_convlstm
-        if use_convlstm:
-            self.conv_lstm = ConvLSTMCell(input_dim=512*block.expansion,
-                                          hidden_dim=512*block.expansion,
-                                          kernel_size=(3,3), bias=False)
-            if self.trainable_lstm_init:
-                self.lstm_init_h = nn.Parameter(torch.normal(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
-                                                0.01*torch.ones(self.conv_lstm.hidden_dim).type(torch.Tensor))
-                                                , requires_grad=True)
-                self.lstm_init_c = nn.Parameter(torch.normal(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
-                                                0.01*torch.ones(self.conv_lstm.hidden_dim).type(torch.Tensor))
-                                                , requires_grad=True)
 
-        self.fc_o = nn.Linear(512 * block.expansion, 1)
-        self.fc_a = nn.Linear(512 * block.expansion, 1)
+        if use_convlstm:
+
+            self.head = ConvLSTMHead(input_dim=512*block.expansion,
+                                     hidden_dim=512*block.expansion,
+                                     train_init=trainable_lstm_init,
+                                     lstm_mem=lstm_mem)
+            #
+            # self.conv_lstm = ConvLSTMCell(input_dim=512*block.expansion,
+            #                               hidden_dim=512*block.expansion,
+            #                               kernel_size=(3,3), bias=False)
+            # if self.trainable_lstm_init:
+            #     self.lstm_init_h = nn.Parameter(torch.normal(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
+            #                                     0.01*torch.ones(self.conv_lstm.hidden_dim).type(torch.Tensor))
+            #                                     , requires_grad=True)
+            #     self.lstm_init_c = nn.Parameter(torch.normal(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
+            #                                     0.01*torch.ones(self.conv_lstm.hidden_dim).type(torch.Tensor))
+            #                                     , requires_grad=True)
+
+        # self.fc_o = nn.Linear(512 * block.expansion, 1)
+        # self.fc_a = nn.Linear(512 * block.expansion, 1)
 
         # self.fc = self.fc_
 
@@ -187,58 +199,66 @@ class ResNetPlusLSTM(resnet.ResNet):
         H = y.shape[2]
         W = y.shape[3]
 
-        skip = y
+        y = y.reshape([B, S, C, H, W])
 
-        if self.use_convlstm:
-            y = y.reshape([B, S, C, H, W])
-            h_states = []
-            if self.trainable_lstm_init:
-                c_state = torch.stack([torch.stack(
-                    [torch.stack([self.lstm_init_c for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in
-                                      range(B)], dim=0)
-                h_state = torch.stack([torch.stack(
-                    [torch.stack([self.lstm_init_h for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in
-                                      range(B)], dim=0)
-            else:
-                h_state, c_state = self.conv_lstm.init_hidden(B, H, W)
+        offset, angle = self.head(y)
 
-            for s in range(S):
+        # C = y.shape[1]
+        # H = y.shape[2]
+        # W = y.shape[3]
 
-                if self.lstm_mem > 0 and s % self.lstm_mem == 0:
-                    h_state, c_state = self.conv_lstm.init_hidden(B, H, W)
+        # skip = y
 
-                    context = torch.zeros(y[:,s,:,:,:].shape).type(torch.Tensor)#.cuda()
-
-                    h_state, c_state = self.conv_lstm(torch.cat([y[:,s,:,:,:], context], dim=1), (h_state, c_state))
-
-                else:
-                    h_state, c_state = self.conv_lstm(y[:,s,:,:,:], (h_state, c_state))
-                h_states.append(h_state)
-
-            # exit(0)
-
-            y = torch.stack(h_states, dim=1)
-            y = y.reshape([B*S, C, H, W])
-
-        if self.conv_lstm_skip:
-            y = torch.cat([y, skip], dim=1)
-
-        y = self.avgpool(y)
-
-        x = y.reshape([B, S, y.shape[1] * y.shape[2] * y.shape[3]])
-
-        if self.use_fc:
-            x = self.fc_(x)
-            x = self.relu(x)
-        else:
-
-            init_c = torch.stack([self.lstm_init_c for _ in range(B)], dim=1)
-            init_h = torch.stack([self.lstm_init_h for _ in range(B)], dim=1)
-
-            x, _ = self.lstm(x, (init_h, init_c))
-
-        offset = self.fc_o(x)
-        angle = self.fc_a(x)
+        # if self.use_convlstm:
+        #     y = y.reshape([B, S, C, H, W])
+        #     h_states = []
+        #     if self.trainable_lstm_init:
+        #         c_state = torch.stack([torch.stack(
+        #             [torch.stack([self.lstm_init_c for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in
+        #                               range(B)], dim=0)
+        #         h_state = torch.stack([torch.stack(
+        #             [torch.stack([self.lstm_init_h for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in
+        #                               range(B)], dim=0)
+        #     else:
+        #         h_state, c_state = self.conv_lstm.init_hidden(B, H, W)
+        #
+        #     for s in range(S):
+        #
+        #         if self.lstm_mem > 0 and s % self.lstm_mem == 0:
+        #             h_state, c_state = self.conv_lstm.init_hidden(B, H, W)
+        #
+        #             context = torch.zeros(y[:,s,:,:,:].shape).type(torch.Tensor)#.cuda()
+        #
+        #             h_state, c_state = self.conv_lstm(torch.cat([y[:,s,:,:,:], context], dim=1), (h_state, c_state))
+        #
+        #         else:
+        #             h_state, c_state = self.conv_lstm(y[:,s,:,:,:], (h_state, c_state))
+        #         h_states.append(h_state)
+        #
+        #     # exit(0)
+        #
+        #     y = torch.stack(h_states, dim=1)
+        #     y = y.reshape([B*S, C, H, W])
+        #
+        # if self.conv_lstm_skip:
+        #     y = torch.cat([y, skip], dim=1)
+        #
+        # y = self.avgpool(y)
+        #
+        # x = y.reshape([B, S, y.shape[1] * y.shape[2] * y.shape[3]])
+        #
+        # if self.use_fc:
+        #     x = self.fc_(x)
+        #     x = self.relu(x)
+        # else:
+        #
+        #     init_c = torch.stack([self.lstm_init_c for _ in range(B)], dim=1)
+        #     init_h = torch.stack([self.lstm_init_h for _ in range(B)], dim=1)
+        #
+        #     x, _ = self.lstm(x, (init_h, init_c))
+        #
+        # offset = self.fc_o(x)
+        # angle = self.fc_a(x)
 
         return offset, angle
 
