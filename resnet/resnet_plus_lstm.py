@@ -6,6 +6,82 @@ from torch.utils import model_zoo
 from resnet.DropBlock import DropBlock2D
 from resnet.convlstm import *
 
+class ConvLSTMHead(nn.Module):
+
+    def __init__(self, input_dim, hidden_dim, train_init, lstm_mem):
+        super(ConvLSTMHead, self).__init__()
+
+        self.lstm_mem = lstm_mem
+
+        self.conv_lstm = ConvLSTMCell(input_dim=input_dim,
+                                      hidden_dim=hidden_dim,
+                                      kernel_size=(3, 3), bias=False)
+
+        self.fc = nn.Linear(2 * hidden_dim, hidden_dim)
+        self.fc_o = nn.Linear(hidden_dim, 1)
+        self.fc_a = nn.Linear(hidden_dim, 1)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        if train_init:
+            self.lstm_init_h = nn.Parameter(torch.normal(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
+                                                         0.01 * torch.ones(self.conv_lstm.hidden_dim).type(
+                                                             torch.Tensor)), requires_grad=True)
+            self.lstm_init_c = nn.Parameter(torch.normal(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
+                                                         0.01 * torch.ones(self.conv_lstm.hidden_dim).type(
+                                                             torch.Tensor)), requires_grad=True)
+        else:
+            self.lstm_init_h = nn.Parameter(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
+                                            requires_grad=False)
+            self.lstm_init_c = nn.Parameter(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
+                                            requires_grad=False)
+
+    def forward(self, x):
+
+        B = x.shape[0]
+        S = x.shape[1]
+        C = x.shape[2]
+        H = x.shape[3]
+        W = x.shape[4]
+
+        h_states = []
+
+        c_state = torch.stack([torch.stack(
+            [torch.stack([self.lstm_init_c for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in range(B)],
+            dim=0)
+        h_state = torch.stack([torch.stack(
+            [torch.stack([self.lstm_init_h for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in range(B)],
+            dim=0)
+
+        for s in range(S):
+
+            if self.lstm_mem > 0 and s % self.lstm_mem == 0:
+                h_state, c_state = self.conv_lstm.init_hidden(B, H, W)
+
+                context = torch.zeros(x[:, s, :, :, :].shape).type(torch.Tensor)  # .cuda()
+
+                h_state, c_state = self.conv_lstm(torch.cat([x[:, s, :, :, :], context], dim=1), (h_state, c_state))
+
+            else:
+                h_state, c_state = self.conv_lstm(x[:, s, :, :, :], (h_state, c_state))
+            h_states.append(h_state)
+
+        y = torch.stack(h_states, dim=1)
+        y = y.reshape([B * S, C, H, W])
+
+        y = self.avgpool(y)
+
+        x = y.reshape([B, S, y.shape[1] * y.shape[2] * y.shape[3]])
+
+        x = self.fc_(x)
+        x = nn.functional.relu(x)
+
+        offset = self.fc_o(x)
+        angle = self.fc_a(x)
+
+        return offset, angle
+    
+
 class ResNetPlusLSTM(resnet.ResNet):
 
     def __init__(self, block, layers, finetune=False, regional_pool=None, use_fc=False, use_convlstm=False,
@@ -13,6 +89,9 @@ class ResNetPlusLSTM(resnet.ResNet):
                  lstm_mem=0):
 
         super().__init__(block, layers)
+
+        if regional_pool is not None:
+            assert False, "regional_pool: not implemented"
 
         self.dropblock = DropBlock2D()
 
