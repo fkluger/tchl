@@ -422,7 +422,7 @@ class KittiRawDatasetPP(Dataset):
         sample = {'images': images, 'offsets': offsets, 'angles': angles}
 
         if self.get_split_data:
-            sample['offsets_ema'] = offset_ema
+            sample['offsets_ema'] = offsets_ema
             sample['angles_ema'] = angles_ema
 
         if self.return_info:

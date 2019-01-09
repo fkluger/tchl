@@ -216,7 +216,6 @@ if __name__ == '__main__':
     parser.add_argument('--random_subsampling', default=1., type=float, metavar='S', help='random subsampling factor')
     parser.add_argument('--conv_lstm_skip', dest='conv_lstm_skip', action='store_true', help='skip connection')
     parser.add_argument('--trainable_lstm_init', dest='trainable_lstm_init', action='store_true', help='')
-    parser.add_argument('--attention', dest='attention', action='store_true', help='')
     parser.add_argument('--confidence', dest='confidence', action='store_true', help='')
     parser.add_argument('--confidence_max_err', default=1e-4, type=float, metavar='S', help='random subsampling factor')
     parser.add_argument('--angle_loss_weight', default=1., type=float, metavar='S', help='random subsampling factor')
@@ -316,8 +315,7 @@ if __name__ == '__main__':
     if args.net == 'res18':
         model = resnet18rnn(args.finetune, regional_pool=None, use_fc=args.fc_layer, use_convlstm=args.conv_lstm,
                             width=WIDTH, height=HEIGHT, trainable_lstm_init=args.trainable_lstm_init,
-                            conv_lstm_skip=args.conv_lstm_skip, confidence=args.confidence,
-                            attention=args.attention).to(device)
+                            conv_lstm_skip=args.conv_lstm_skip, confidence=args.confidence).to(device)
     elif args.net == 'res50':
         model = resnet50rnn(args.finetune, regional_pool=None, use_fc=args.fc_layer, use_convlstm=args.conv_lstm).to(device)
     else:

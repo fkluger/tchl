@@ -13,8 +13,8 @@ from scipy import ndimage
 from skimage import transform
 
 # Change this to the directory where you store KITTI data
-# basedir = '/phys/intern/kluger/tmp/kitti/rawdata'
-basedir = '/data/scene_understanding/KITTI/rawdata'
+basedir = '/phys/intern/kluger/tmp/kitti/rawdata'
+# basedir = '/data/scene_understanding/KITTI/rawdata'
 
 dates = [
     '2011_09_26',
@@ -48,8 +48,8 @@ for date in dates:
 
         dataset = pykitti.raw(basedir, date, drive)
 
-        # target_dir = "/phys/intern/kluger/tmp/kitti/horizons_s%.3f/%s/%s" % (scale, date, drive)
-        target_dir = "/data/kluger/datasets/kitti/horizons_s%.3f_ema%.3f/%s/%s" % (scale, ema_alpha, date, drive)
+        target_dir = "/phys/intern/kluger/tmp/kitti/horizons_s%.3f_ema%.3f/%s/%s" % (scale, ema_alpha, date, drive)
+        # target_dir = "/data/kluger/datasets/kitti/horizons_s%.3f_ema%.3f/%s/%s" % (scale, ema_alpha, date, drive)
         # target_dir = "/home/kluger/athene/kluger/tmp/kitti/horizons_s%.3f/%s/%s" % (scale, date, drive)
 
         if not os.path.exists(target_dir):
@@ -69,6 +69,7 @@ for date in dates:
         for idx, image in enumerate(iter(dataset.rgb)):
 
             image_width = WIDTH
+            orig_image_width = image[0].width
 
             pad_w = WIDTH - image[0].width
             pad_h = HEIGHT - image[0].height
@@ -91,7 +92,7 @@ for date in dates:
             padded_image = np.transpose(padded_image, [2, 0, 1]).astype(np.float32) #/ 255.
 
             hp1 = np.cross(h, np.array([1, 0, 0]))
-            hp2 = np.cross(h, np.array([1, 0, -image_width]))
+            hp2 = np.cross(h, np.array([1, 0, -orig_image_width]))
             hp1 /= hp1[2]
             hp2 /= hp2[2]
 
@@ -104,6 +105,7 @@ for date in dates:
             hp2[0:2] *= scale
 
             offset = (0.5 * (hp1[1] + hp2[1])) / HEIGHT - 0.5
+            mp_old = 0.5 * (hp1 + hp2)
 
             h = np.cross(hp1, hp2)
 
@@ -123,9 +125,10 @@ for date in dates:
             offset_ema_ = 0.5 + offset_ema
             offset_ema_ *= HEIGHT
 
-            mp = np.array([WIDTH / 2., offset_ema_])
+            mp = np.array([WIDTH / 2. * scale, offset_ema_])
             nv = np.array([np.sin(angle_ema), np.cos(angle_ema)])
             h_ema = np.array([nv[0], nv[1], -np.dot(nv, mp)])
+            h = h/np.linalg.norm(h[0:2])
 
             data = {'image': padded_image, 'horizon_hom': h, 'horizon_p1': hp1, 'horizon_p2': hp2, 'offset': offset,
                     'angle': angle, 'offset_ema': offset_ema, 'angle_ema': angle_ema, 'horizon_hom_ema': h_ema,

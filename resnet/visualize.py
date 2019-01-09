@@ -185,7 +185,7 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
         images = sample['images']
         offsets = sample['offsets']
         angles = sample['angles']
-        if args.ame > 0:
+        if args.ema > 0:
             offsets_ema = sample['offsets_ema']
             angles_ema = sample['angles_ema']
 
@@ -194,8 +194,10 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
 
         print("idx ", idx)
         all_offsets = []
+        all_offsets_ema = []
         all_offsets_estm = []
         all_angles = []
+        all_angles_ema = []
         all_angles_estm = []
 
         fig = plt.figure(figsize=(6.4, 3.0))
@@ -238,8 +240,8 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
                     offset_ema = offsets_ema[0, si].detach().numpy().squeeze()
                     angle_ema = angles_ema[0, si].detach().numpy().squeeze()
 
-                    # all_offsets += [-offset.copy()]
-                    # all_angles += [angle.copy()]
+                    all_offsets_ema += [-offset_ema.copy()]
+                    all_angles_ema += [angle_ema.copy()]
 
                     offset_ema += 0.5
                     offset_ema *= height
@@ -345,16 +347,20 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
         plt.figure()
         x = np.arange(0, len(all_offsets))
         all_offsets = np.array(all_offsets)
+        all_offsets_ema = np.array(all_offsets_ema)
         all_offsets_estm = np.array(all_offsets_estm)
         # print(all_offsets)
         plt.plot(x, all_offsets, '-', c='#99C000')
-        plt.plot(x, all_offsets_estm, '-', c='#0083CC')
+        plt.plot(x, all_offsets_ema, '-', c='#fdca00')
+        if checkpoint_path is not None:
+            plt.plot(x, all_offsets_estm, '-', c='#0083CC')
         plt.ylim(-.4, .4)
 
-        errors = np.abs(all_offsets-all_offsets_estm)
-        err_mean = np.mean(errors).squeeze()
-        err_stdd = np.std(errors).squeeze()
-        plt.suptitle("error mean: %.4f -- stdd: %.4f" % (err_mean, err_stdd))
+        if checkpoint_path is not None:
+            errors = np.abs(all_offsets-all_offsets_estm)
+            err_mean = np.mean(errors).squeeze()
+            err_stdd = np.std(errors).squeeze()
+            plt.suptitle("error mean: %.4f -- stdd: %.4f" % (err_mean, err_stdd))
 
         plt.savefig(os.path.join(png_folder, "offsets_%03d.png" % idx), dpi=300)
         plt.savefig(os.path.join(svg_folder, "offsets_%03d.svg" % idx), dpi=300)
@@ -363,16 +369,20 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
         plt.figure()
         x = np.arange(0, len(all_angles))
         all_angles = np.array(all_angles)
+        all_angles_ema = np.array(all_angles_ema)
         all_angles_estm = np.array(all_angles_estm)
         # print(all_offsets)
         plt.plot(x, all_angles, '-', c='#99C000')
-        plt.plot(x, all_angles_estm, '-', c='#0083CC')
+        plt.plot(x, all_angles_ema, '-', c='#fdca00')
+        if checkpoint_path is not None:
+            plt.plot(x, all_angles_estm, '-', c='#0083CC')
         plt.ylim(-.4, .4)
 
-        errors = np.abs(all_angles-all_angles_estm)
-        err_mean = np.mean(errors).squeeze()
-        err_stdd = np.std(errors).squeeze()
-        plt.suptitle("error mean: %.4f -- stdd: %.4f" % (err_mean, err_stdd))
+        if checkpoint_path is not None:
+            errors = np.abs(all_angles-all_angles_estm)
+            err_mean = np.mean(errors).squeeze()
+            err_stdd = np.std(errors).squeeze()
+            plt.suptitle("error mean: %.4f -- stdd: %.4f" % (err_mean, err_stdd))
 
         plt.savefig(os.path.join(png_folder, "angles_%03d.png" % idx), dpi=300)
         plt.savefig(os.path.join(svg_folder, "angles_%03d.svg" % idx), dpi=300)
