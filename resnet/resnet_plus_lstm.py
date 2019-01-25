@@ -8,14 +8,28 @@ from resnet.convlstm import *
 
 class ConvLSTMHead(nn.Module):
 
-    def __init__(self, input_dim, hidden_dim, train_init, lstm_mem):
+    def __init__(self, input_dim, hidden_dim, train_init, lstm_mem, relu_lstm, batchnorm, skip, bias):
         super(ConvLSTMHead, self).__init__()
 
         self.lstm_mem = lstm_mem
 
-        self.conv_lstm = ConvLSTMCell(input_dim=input_dim,
-                                      hidden_dim=hidden_dim,
-                                      kernel_size=(3, 3), bias=False)
+        if not relu_lstm:
+            self.conv_lstm = ConvLSTMCell(input_dim=input_dim,
+                                          hidden_dim=hidden_dim,
+                                          kernel_size=(3, 3), bias=bias)
+        else:
+            if batchnorm:
+                self.conv_lstm = ConvLSTMCellReLUBN(input_dim=input_dim,
+                                                  hidden_dim=hidden_dim,
+                                                  kernel_size=(3, 3), bias=bias)
+            elif skip:
+                self.conv_lstm = ConvLSTMCellReLUSkip(input_dim=input_dim,
+                                                  hidden_dim=hidden_dim,
+                                                  kernel_size=(3, 3), bias=bias)
+            else:
+                self.conv_lstm = ConvLSTMCellReLU(input_dim=input_dim,
+                                                  hidden_dim=hidden_dim,
+                                                  kernel_size=(3, 3), bias=bias)
 
         self.fc = nn.Linear(hidden_dim, hidden_dim)
         self.fc_o = nn.Linear(hidden_dim, 1)
@@ -56,15 +70,22 @@ class ConvLSTMHead(nn.Module):
         for s in range(S):
 
             if self.lstm_mem > 0 and s % self.lstm_mem == 0:
-                h_state, c_state = self.conv_lstm.init_hidden(B, H, W)
+                # h_state, c_state = self.conv_lstm.init_hidden(B, H, W)
 
-                context = torch.zeros(x[:, s, :, :, :].shape).type(torch.Tensor)  # .cuda()
+                # context = torch.zeros(x[:, s, :, :, :].shape).type(torch.Tensor)  # .cuda()
+                c_state = torch.stack([torch.stack(
+                    [torch.stack([self.lstm_init_c for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in
+                    range(B)],
+                    dim=0)
+                h_state = torch.stack([torch.stack(
+                    [torch.stack([self.lstm_init_h for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in
+                    range(B)],
+                    dim=0)
+                # h_state, c_state = self.conv_lstm(torch.cat([x[:, s, :, :, :], context], dim=1), (h_state, c_state))
 
-                h_state, c_state = self.conv_lstm(torch.cat([x[:, s, :, :, :], context], dim=1), (h_state, c_state))
-
-            else:
-                h_state, c_state = self.conv_lstm(x[:, s, :, :, :], (h_state, c_state))
-            h_states.append(h_state)
+            # else:
+            h_state, c_state, y_step = self.conv_lstm(x[:, s, :, :, :], (h_state, c_state))
+            h_states.append(y_step)
 
         y = torch.stack(h_states, dim=1)
         y = y.reshape([B * S, C, H, W])
@@ -85,11 +106,47 @@ class ConvLSTMHead(nn.Module):
         return offset, angle
 
 
+class FCHead(nn.Module):
+
+    def __init__(self, input_dim, output_dim):
+        super(FCHead, self).__init__()
+
+        self.fc = nn.Linear(input_dim, output_dim)
+        self.fc_o = nn.Linear(output_dim, 1)
+        self.fc_a = nn.Linear(output_dim, 1)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+
+    def forward(self, x):
+
+        B = x.shape[0]
+        S = x.shape[1]
+        C = x.shape[2]
+        H = x.shape[3]
+        W = x.shape[4]
+
+        y = x.reshape([B * S, C, H, W])
+
+        y = self.avgpool(y)
+
+        x = y.reshape([B, S, y.shape[1] * y.shape[2] * y.shape[3]])
+
+        x = self.fc(x)
+        x = nn.functional.relu(x)
+
+        offset = self.fc_o(x)
+        angle = self.fc_a(x)
+
+        return offset, angle
+
+
 class ResNetPlusLSTM(resnet.ResNet):
 
     def __init__(self, block, layers, finetune=False, regional_pool=None, use_fc=False, use_convlstm=False,
                  trainable_lstm_init=False, width=None, height=None, conv_lstm_skip=False, confidence=False,
-                 lstm_mem=0):
+                 lstm_mem=0, second_head=False, relu_lstm=False, second_head_fc=False, lstm_bn=False, lstm_skip=False,
+                 lstm_bias=False):
 
         super().__init__(block, layers)
 
@@ -113,6 +170,9 @@ class ResNetPlusLSTM(resnet.ResNet):
         self.lstm_mem = lstm_mem
 
         self.head = None
+        self.head2 = None
+
+        self.second_head = second_head
 
         if regional_pool is not None:
             self.regional_pool = True
@@ -153,7 +213,17 @@ class ResNetPlusLSTM(resnet.ResNet):
             self.head = ConvLSTMHead(input_dim=512*block.expansion,
                                      hidden_dim=512*block.expansion,
                                      train_init=trainable_lstm_init,
-                                     lstm_mem=lstm_mem)
+                                     lstm_mem=lstm_mem, relu_lstm=relu_lstm, batchnorm=lstm_bn, skip=lstm_skip, bias=lstm_bias)
+
+            if second_head:
+                if second_head_fc:
+                    self.head2 = FCHead(input_dim=512*block.expansion,
+                                        output_dim=512*block.expansion)
+                else:
+                    self.head2 = ConvLSTMHead(input_dim=512*block.expansion,
+                                        hidden_dim=512*block.expansion,
+                                         train_init=trainable_lstm_init,
+                                         lstm_mem=lstm_mem, relu_lstm=relu_lstm, batchnorm=lstm_bn, skip=lstm_skip, bias=lstm_bias)
             #
             # self.conv_lstm = ConvLSTMCell(input_dim=512*block.expansion,
             #                               hidden_dim=512*block.expansion,
@@ -202,6 +272,14 @@ class ResNetPlusLSTM(resnet.ResNet):
         y = y.reshape([B, S, C, H, W])
 
         offset, angle = self.head(y)
+
+        if self.second_head:
+            offset2, angle2 = self.head2(y)
+
+            return offset2, angle2, offset, angle
+
+        else:
+            return offset, angle
 
         # C = y.shape[1]
         # H = y.shape[2]
@@ -260,7 +338,6 @@ class ResNetPlusLSTM(resnet.ResNet):
         # offset = self.fc_o(x)
         # angle = self.fc_a(x)
 
-        return offset, angle
 
     def forward_convs_single(self, x):
         x = x.unsqueeze(0)

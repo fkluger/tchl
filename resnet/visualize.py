@@ -22,7 +22,7 @@ hostname = platform.node()
 import argparse
 import glob
 from mpl_toolkits.mplot3d import Axes3D
-
+import contextlib
 
 from utilities.gradcam import GradCam, GuidedBackprop
 # from utilities.gradcam_misc_functions import
@@ -33,11 +33,15 @@ parser.add_argument('--set', '-s', default='val', type=str, metavar='PATH', help
 parser.add_argument('--gradcam', dest='use_gradcam', action='store_true', help='visualize with gradcam')
 parser.add_argument('--guided', dest='guided_gradcam', action='store_true', help='visualize with guided gradcam')
 parser.add_argument('--whole', dest='whole_sequence', action='store_true', help='')
+parser.add_argument('--video', dest='video', action='store_true', help='')
+parser.add_argument('--fchead2', dest='fchead2', action='store_true', help='')
 parser.add_argument('--ema', default=0., type=float, metavar='N', help='')
 parser.add_argument('--seqlength', default=256, type=int, metavar='N', help='')
 parser.add_argument('--cpid', default=-1, type=int, metavar='N', help='')
 parser.add_argument('--lstm_mem', default=256, type=int, metavar='N', help='')
 parser.add_argument('--disable_mean_subtraction', dest='disable_mean_subtraction', action='store_true', help='visualize with gradcam')
+parser.add_argument('--relulstm', dest='relulstm', action='store_true', help='')
+parser.add_argument('--skip', dest='skip', action='store_true', help='')
 
 args = parser.parse_args()
 
@@ -54,7 +58,8 @@ else:
 if not os.path.exists(result_folder):
     os.makedirs(result_folder)
 
-device = torch.device('cuda', 0)
+# device = torch.device('cuda', 0)
+device = torch.device('cpu', 0)
 
 seq_length = args.seqlength
 whole_sequence = args.whole_sequence
@@ -62,7 +67,8 @@ whole_sequence = args.whole_sequence
 downscale = 2.
 
 if checkpoint_path is not None:
-    model = resnet18rnn(load=False, use_fc=True, use_convlstm=True, lstm_mem=args.lstm_mem).to(device)
+    model = resnet18rnn(load=False, use_fc=True, use_convlstm=True, lstm_mem=args.lstm_mem, second_head=(args.ema > 0),
+                        second_head_fc=args.fchead2, relu_lstm=args.relulstm, lstm_skip=args.skip).to(device)
     # model = nn.DataParallel(model)
 
     if args.cpid == -1:
@@ -188,6 +194,8 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
         if args.ema > 0:
             offsets_ema = sample['offsets_ema']
             angles_ema = sample['angles_ema']
+            offsets_dif = offsets - offsets_ema
+            angles_dif = angles - angles_ema
 
         # K = sample['K']
         # Gs = sample['G']
@@ -195,24 +203,37 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
         print("idx ", idx)
         all_offsets = []
         all_offsets_ema = []
+        all_offsets_dif = []
         all_offsets_estm = []
+        all_offsets_ema_estm = []
+        all_offsets_dif_estm = []
         all_angles = []
         all_angles_ema = []
+        all_angles_dif = []
         all_angles_estm = []
+        all_angles_ema_estm = []
+        all_angles_dif_estm = []
 
-        fig = plt.figure(figsize=(6.4, 3.0))
-        # ax = fig.add_subplot(111)
-        # fig3d = plt.figure()
-        # ax3d = fig3d.add_subplot(111, projection='3d')
+        if args.video:
+            fig = plt.figure(figsize=(6.4, 3.0))
 
-        l1, = plt.plot([], [], '-', lw=2, c='#99C000')
-        l2, = plt.plot([], [], '--', lw=2, c='#0083CC')
-        if args.ema > 0:
-            l3, = plt.plot([], [], '--', lw=2, c='#fdca00')
+            l1, = plt.plot([], [], '-', lw=2, c='#99C000')
+            l2, = plt.plot([], [], '--', lw=2, c='#0083CC')
+            if args.ema > 0:
+                l3, = plt.plot([], [], '--', lw=1.2, c='#fdca00')
+                # l4, = plt.plot([], [], '--', lw=1.2, c='#fdca00')
 
-        with writer.saving(fig, video_folder + "%s%05d.mp4" % (("guided-" if args.guided_gradcam else "") + ("gradcam_" if args.use_gradcam else ""), idx), 300):
+
+        with writer.saving(fig, video_folder + "%s%05d.mp4" % (("guided-" if args.guided_gradcam else "") +
+                                                               ("gradcam_" if args.use_gradcam else ""), idx), 300) \
+                if args.video else contextlib.suppress():
             if whole_sequence and checkpoint_path is not None:
-                output_offsets, output_angles = model(images.to(device))
+                if args.ema > 0:
+                    output_offsets_dif, output_angles_dif, output_offsets_ema, output_angles_ema = model(images.to(device))
+                    output_offsets = output_offsets_ema + output_offsets_dif
+                    output_angles = output_angles_ema + output_angles_dif
+                else:
+                    output_offsets, output_angles = model(images.to(device))
             for si in range(images.shape[1]):
 
                 image = images.numpy()[0,si,:,:,:].transpose((1,2,0))
@@ -253,19 +274,58 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
                     true_h2_ema = np.cross(true_hl_ema, np.array([1, 0, -width]))
                     true_h1_ema /= true_h1_ema[2]
                     true_h2_ema /= true_h2_ema[2]
+                    
+                    offset_dif = offsets_dif[0, si].detach().numpy().squeeze()
+                    angle_dif = angles_dif[0, si].detach().numpy().squeeze()
+
+                    all_offsets_dif += [-offset_dif.copy()]
+                    all_angles_dif += [angle_dif.copy()]
+
+                    offset_dif += 0.5
+                    offset_dif *= height
+
+                    true_mp_dif = np.array([width/2., offset_dif])
+                    true_nv_dif = np.array([np.sin(angle_dif), np.cos(angle_dif)])
+                    true_hl_dif = np.array([true_nv_dif[0], true_nv_dif[1], -np.dot(true_nv_dif, true_mp_dif)])
+                    true_h1_dif = np.cross(true_hl_dif, np.array([1, 0, 0]))
+                    true_h2_dif = np.cross(true_hl_dif, np.array([1, 0, -width]))
+                    true_h1_dif /= true_h1_dif[2]
+                    true_h2_dif /= true_h2_dif[2]
 
                 plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=None, hspace=None)
                     # fig.set_dpi(plt.rcParams["figure.dpi"])
 
                 if checkpoint_path is not None:
                     if not whole_sequence:
-                        output_offsets, output_angles = model(images[:,si,:,:,:].unsqueeze(1).to(device))
+                        if args.ema > 0:
+                            output_offsets_dif, output_angles_dif, output_offsets_ema, output_angles_ema = model(images[:,si,:,:,:].unsqueeze(1).to(device))
+                            output_offsets = output_offsets_ema + output_offsets_dif
+                            output_angles = output_angles_ema + output_angles_dif
+                            offset_ema_estm = output_offsets_ema[0,0].cpu().detach().numpy().squeeze()
+                            angle_ema_estm = output_angles_ema[0,0].cpu().detach().numpy().squeeze()
+                            all_offsets_ema_estm += [-offset_ema_estm.copy()]
+                            all_angles_ema_estm += [angle_ema_estm.copy()]
+                            offset_dif_estm = output_offsets_dif[0,0].cpu().detach().numpy().squeeze()
+                            angle_dif_estm = output_angles_dif[0,0].cpu().detach().numpy().squeeze()
+                            all_offsets_dif_estm += [-offset_dif_estm.copy()]
+                            all_angles_dif_estm += [angle_dif_estm.copy()]
+                        else:
+                            output_offsets, output_angles = model(images[:,si,:,:,:].unsqueeze(1).to(device))
                         offset_estm = output_offsets[0,0].cpu().detach().numpy().squeeze()
                         angle_estm = output_angles[0,0].cpu().detach().numpy().squeeze()
 
                     else:
                         offset_estm = output_offsets[0,si].cpu().detach().numpy().squeeze()
                         angle_estm = output_angles[0,si].cpu().detach().numpy().squeeze()
+                        if args.ema > 0:
+                            offset_ema_estm = output_offsets_ema[0,si].cpu().detach().numpy().squeeze()
+                            angle_ema_estm = output_angles_ema[0,si].cpu().detach().numpy().squeeze()
+                            all_offsets_ema_estm += [-offset_ema_estm.copy()]
+                            all_angles_ema_estm += [angle_ema_estm.copy()]
+                            offset_dif_estm = output_offsets_dif[0,si].cpu().detach().numpy().squeeze()
+                            angle_dif_estm = output_angles_dif[0,si].cpu().detach().numpy().squeeze()
+                            all_offsets_dif_estm += [-offset_dif_estm.copy()]
+                            all_angles_dif_estm += [angle_dif_estm.copy()]
 
                     all_offsets_estm += [-offset_estm.copy()]
                     all_angles_estm += [angle_estm.copy()]
@@ -319,41 +379,51 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
                         else:
                             image = class_activation_on_image_combined(image*255., cam_up.astype(np.float32)-cam_down.astype(np.float32))
 
-                plt.imshow(image)
-                plt.axis('off')
-                plt.autoscale(False)
+                if args.video:
+                    plt.imshow(image)
+                    plt.axis('off')
+                    plt.autoscale(False)
 
-                l1.set_data([true_h1[0], true_h2[0]], [true_h1[1], true_h2[1]])
+                    l1.set_data([true_h1[0], true_h2[0]], [true_h1[1], true_h2[1]])
 
-                if args.ema > 0:
-                    l3.set_data([true_h1_ema[0], true_h2_ema[0]], [true_h1_ema[1], true_h2_ema[1]])
+                    if args.ema > 0:
+                        l3.set_data([true_h1_ema[0], true_h2_ema[0]], [true_h1_ema[1], true_h2_ema[1]])
+                        # l4.set_data([true_h1_dif[0], true_h2_dif[0]], [true_h1_dif[1], true_h2_dif[1]])
 
-                if checkpoint_path is not None:
-                    l2.set_data([estm_h1[0], estm_h2[0]], [estm_h1[1], estm_h2[1]])
+                    if checkpoint_path is not None:
+                        l2.set_data([estm_h1[0], estm_h2[0]], [estm_h1[1], estm_h2[1]])
 
-                    plt.suptitle("true: %.1f px, %.1f deg --- error: %.1f px, %.1f deg" %
-                                 (offset, angle*180./np.pi, np.abs(offset-offset_estm),
-                                  np.abs(angle-angle_estm)*180./np.pi), family='monospace', y=0.9)
-                else:
-                    plt.suptitle("%.1f px, %.1f deg" %
-                                 (offset, angle*180./np.pi), family='monospace', y=0.9)
+                        plt.suptitle("true: %.1f px, %.1f deg --- error: %.1f px, %.1f deg" %
+                                     (offset, angle*180./np.pi, np.abs(offset-offset_estm),
+                                      np.abs(angle-angle_estm)*180./np.pi), family='monospace', y=0.9)
+                    else:
+                        plt.suptitle("%.1f px, %.1f deg" %
+                                     (offset, angle*180./np.pi), family='monospace', y=0.9)
 
-                # plt.show()
-                writer.grab_frame()
-                # plt.clf()
-
-        plt.close()
+                    # plt.show()
+                    writer.grab_frame()
+                    # plt.clf()
+        if args.video:
+            plt.close()
 
         plt.figure()
         x = np.arange(0, len(all_offsets))
         all_offsets = np.array(all_offsets)
         all_offsets_ema = np.array(all_offsets_ema)
+        all_offsets_dif = np.array(all_offsets_dif)
         all_offsets_estm = np.array(all_offsets_estm)
+        all_offsets_ema_estm = np.array(all_offsets_ema_estm)
+        all_offsets_dif_estm = np.array(all_offsets_dif_estm)
         # print(all_offsets)
         plt.plot(x, all_offsets, '-', c='#99C000')
-        plt.plot(x, all_offsets_ema, '-', c='#fdca00')
+        if args.ema > 0:
+            plt.plot(x, all_offsets_ema, '-', c='#fdca00')
+            plt.plot(x, all_offsets_dif, '-', c='#fdca00')
         if checkpoint_path is not None:
             plt.plot(x, all_offsets_estm, '-', c='#0083CC')
+            if args.ema > 0:
+                plt.plot(x, all_offsets_ema_estm, '-', c='#A60084')
+                plt.plot(x, all_offsets_dif_estm, '-', c='#A60084')
         plt.ylim(-.4, .4)
 
         if checkpoint_path is not None:
@@ -370,12 +440,20 @@ with (torch.enable_grad() if args.use_gradcam else torch.no_grad()):
         x = np.arange(0, len(all_angles))
         all_angles = np.array(all_angles)
         all_angles_ema = np.array(all_angles_ema)
+        all_angles_dif = np.array(all_angles_dif)
         all_angles_estm = np.array(all_angles_estm)
+        all_angles_ema_estm = np.array(all_angles_ema_estm)
+        all_angles_dif_estm = np.array(all_angles_dif_estm)
         # print(all_offsets)
         plt.plot(x, all_angles, '-', c='#99C000')
-        plt.plot(x, all_angles_ema, '-', c='#fdca00')
+        if args.ema > 0:
+            plt.plot(x, all_angles_ema, '-', c='#fdca00')
+            plt.plot(x, all_angles_dif, '-', c='#fdca00')
         if checkpoint_path is not None:
             plt.plot(x, all_angles_estm, '-', c='#0083CC')
+            if args.ema > 0:
+                plt.plot(x, all_angles_ema_estm, '-', c='#A60084')
+                plt.plot(x, all_angles_dif_estm, '-', c='#A60084')
         plt.ylim(-.4, .4)
 
         if checkpoint_path is not None:

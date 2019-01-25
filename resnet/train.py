@@ -218,9 +218,15 @@ if __name__ == '__main__':
     parser.add_argument('--trainable_lstm_init', dest='trainable_lstm_init', action='store_true', help='')
     parser.add_argument('--confidence', dest='confidence', action='store_true', help='')
     parser.add_argument('--confidence_max_err', default=1e-4, type=float, metavar='S', help='random subsampling factor')
+    parser.add_argument('--ema', default=0., type=float, metavar='S', help='')
     parser.add_argument('--angle_loss_weight', default=1., type=float, metavar='S', help='random subsampling factor')
     parser.add_argument('--load', default=None, type=str, metavar='DS', help='dataset')
     parser.add_argument('--eval', dest='eval', action='store_true', help='')
+    parser.add_argument('--relulstm', dest='relulstm', action='store_true', help='')
+    parser.add_argument('--fchead2', dest='fchead2', action='store_true', help='')
+    parser.add_argument('--bn', dest='bn', action='store_true', help='')
+    parser.add_argument('--skip', dest='skip', action='store_true', help='')
+    parser.add_argument('--bias', dest='bias', action='store_true', help='')
     parser.add_argument('--max_error_loss', dest='max_error_loss', action='store_true', help='')
     parser.add_argument('--no_fill_up', dest='no_fill_up', action='store_true', help='')
 
@@ -280,7 +286,7 @@ if __name__ == '__main__':
         pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
     elif 'hekate' in hostname:
         target_base = "/data/kluger/checkpoints/horizon_sequences"
-        root_dir = "/home/kluger/tmp/datasets/kitti/horizons" if args.set == 'kitti' else "/home/kluger/tmp/datasets/HLW"
+        root_dir = "/phys/ssd/kitti/horizons" if args.set == 'kitti' else "/data/scene_understanding/HLW"
         csv_base = "/home/kluger/tmp/kitti_split_3"
         pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
     else:
@@ -291,6 +297,9 @@ if __name__ == '__main__':
 
     if args.downscale > 1:
         root_dir += "_s%.3f" % (1./args.downscale)
+
+    if args.ema > 0:
+        root_dir += "_ema%.3f" % args.ema
 
     pdf_file = None
 
@@ -315,7 +324,9 @@ if __name__ == '__main__':
     if args.net == 'res18':
         model = resnet18rnn(args.finetune, regional_pool=None, use_fc=args.fc_layer, use_convlstm=args.conv_lstm,
                             width=WIDTH, height=HEIGHT, trainable_lstm_init=args.trainable_lstm_init,
-                            conv_lstm_skip=args.conv_lstm_skip, confidence=args.confidence).to(device)
+                            conv_lstm_skip=args.conv_lstm_skip, confidence=args.confidence, second_head=(args.ema > 0),
+                            relu_lstm=args.relulstm, second_head_fc=args.fchead2, lstm_bn=args.bn, lstm_skip=args.skip,
+                            lstm_bias=args.bias).to(device)
     elif args.net == 'res50':
         model = resnet50rnn(args.finetune, regional_pool=None, use_fc=args.fc_layer, use_convlstm=args.conv_lstm).to(device)
     else:
@@ -379,11 +390,11 @@ if __name__ == '__main__':
         train_dataset = DS.KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, random_subsampling=args.random_subsampling,
                                         csv_file=csv_base + "/train.csv", seq_length=args.seqlength,
                                         im_height=HEIGHT, im_width=WIDTH, fill_up=(not args.no_fill_up),
-                                          scale=1./args.downscale, transform=tfs)
+                                          scale=1./args.downscale, transform=tfs, get_split_data=(args.ema > 0))
         val_dataset = DS.KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False,
                                         csv_file=csv_base + "/val.csv", seq_length=args.seqlength,
                                         im_height=HEIGHT, im_width=WIDTH, fill_up=(not args.no_fill_up),
-                                          scale=1./args.downscale, transform=tfs_val)
+                                          scale=1./args.downscale, transform=tfs_val, get_split_data=(args.ema > 0))
     elif args.set == 'hlw':
 
         train_dataset = DS.HLWDataset(root_dir=root_dir, transform=tfs, augmentation=True, set='train')
@@ -440,9 +451,14 @@ if __name__ == '__main__':
             losses = []
             offset_losses = []
             angle_losses = []
+            offset_ema_losses = []
+            angle_ema_losses = []
+            offset_dif_losses = []
+            angle_dif_losses = []
             temp_offset_losses = []
             temp_angle_losses = []
             confidence_losses = []
+            max_err_losses = []
 
             tt0 = time.time()
 
@@ -456,15 +472,33 @@ if __name__ == '__main__':
                 images = sample['images'].to(device, non_blocking=True)
                 offsets = sample['offsets'].to(device, non_blocking=True)
                 angles = sample['angles'].to(device, non_blocking=True)
+                if args.ema > 0:
+                    offsets_ema = sample['offsets_ema'].to(device, non_blocking=True)
+                    angles_ema = sample['angles_ema'].to(device, non_blocking=True)
+                    offsets_dif = offsets - offsets_ema
+                    angles_dif = angles - angles_ema
 
                 # Forward pass
                 if args.confidence:
+                    assert False, "confidence: not implemented"
                     output_offsets, output_angles, output_confidence = model(images, use_dropblock=False)
                     confidence_target = ConfidenceTarget(output_offsets.view(-1, 1), offsets.view(-1, 1))
                     confidence_loss = torch.nn.CrossEntropyLoss()(output_confidence.view(-1, 2), confidence_target)
                     confidence_losses += [confidence_loss]
                 else:
-                    output_offsets, output_angles = model(images, use_dropblock=False)
+                    if args.ema > 0:
+                        output_offsets_dif, output_angles_dif, output_offsets_ema, output_angles_ema = \
+                            model(images, use_dropblock=False)
+                    else:
+                        output_offsets, output_angles = model(images, use_dropblock=False)
+
+                if args.ema > 0:
+                    output_offsets = output_offsets_ema + output_offsets_dif
+                    output_angles = output_angles_ema + output_angles_dif
+                    offset_ema_loss = criterion(output_offsets_ema, offsets_ema)
+                    angle_ema_loss = criterion(output_angles_ema, angles_ema)
+                    offset_dif_loss = criterion(output_offsets_dif, offsets_dif)
+                    angle_dif_loss = criterion(output_angles_dif, angles_dif)
 
                 offset_loss = criterion(output_offsets, offsets)
                 angle_loss = criterion(output_angles, angles)
@@ -477,13 +511,21 @@ if __name__ == '__main__':
                     hl_err = F.l1_loss(hl_estm, hl_true, size_average=False, reduce=False)
                     hr_err = F.l1_loss(hr_estm, hr_true, size_average=False, reduce=False)
                     h_errs = torch.max(hl_err, hr_err)
-                    loss += torch.mean(h_errs)
+                    max_err_loss = torch.mean(h_errs)
+                    loss += torch.clamp(max_err_loss, max=.001)
+                    max_err_losses += [max_err_loss]
 
+                # else:
+                if args.temporal_loss_only:
+                    loss = 0
                 else:
-                    if args.temporal_loss_only:
-                        loss = 0
+
+                    if args.ema > 0:
+                        loss += offset_ema_loss + angle_ema_loss * args.angle_loss_weight + \
+                                offset_dif_loss + angle_dif_loss * args.angle_loss_weight
                     else:
                         loss += offset_loss + angle_loss * args.angle_loss_weight
+                            
 
                 if args.temporal_loss:
                     temp_offset_loss = temp_criterion(output_offsets, offsets)
@@ -519,6 +561,11 @@ if __name__ == '__main__':
                 losses.append(loss)
                 offset_losses.append(offset_loss)
                 angle_losses.append(angle_loss)
+                if args.ema > 0:
+                    offset_ema_losses.append(offset_ema_loss)
+                    angle_ema_losses.append(angle_ema_loss)
+                    offset_dif_losses.append(offset_dif_loss)
+                    angle_dif_losses.append(angle_dif_loss)
 
                 if (i+1) % 100 == 0:
                     # average_loss = np.mean(losses)
@@ -549,6 +596,30 @@ if __name__ == '__main__':
                         tensorboard_writer.add_scalar('train/confidence_loss', confidence_loss.item(), num_iteration)
                         tensorboard_writer.add_scalar('train/confidence_loss_avg', average_confidence_loss, num_iteration)
 
+                    if args.ema > 0:
+                        offset_ema_losses_tensor = torch.stack(offset_ema_losses, dim=0).view(-1)
+                        average_offset_ema_loss = offset_ema_losses_tensor.mean().item()
+                        angle_ema_losses_tensor = torch.stack(angle_ema_losses, dim=0).view(-1)
+                        average_angle_ema_loss = angle_ema_losses_tensor.mean().item()
+                        tensorboard_writer.add_scalar('train/offset_ema_loss', offset_ema_loss.item(), num_iteration)
+                        tensorboard_writer.add_scalar('train/angle_ema_loss', angle_ema_loss.item(), num_iteration)
+                        tensorboard_writer.add_scalar('train/offset_ema_loss_avg', average_offset_ema_loss, num_iteration)
+                        tensorboard_writer.add_scalar('train/angle_ema_loss_avg', average_angle_ema_loss, num_iteration)
+                        offset_dif_losses_tensor = torch.stack(offset_dif_losses, dim=0).view(-1)
+                        average_offset_dif_loss = offset_dif_losses_tensor.mean().item()
+                        angle_dif_losses_tensor = torch.stack(angle_dif_losses, dim=0).view(-1)
+                        average_angle_dif_loss = angle_dif_losses_tensor.mean().item()
+                        tensorboard_writer.add_scalar('train/offset_dif_loss', offset_dif_loss.item(), num_iteration)
+                        tensorboard_writer.add_scalar('train/angle_dif_loss', angle_dif_loss.item(), num_iteration)
+                        tensorboard_writer.add_scalar('train/offset_dif_loss_avg', average_offset_dif_loss, num_iteration)
+                        tensorboard_writer.add_scalar('train/angle_dif_loss_avg', average_angle_dif_loss, num_iteration)
+
+                    if args.max_error_loss:
+                        max_err_losses_tensor = torch.stack(max_err_losses, dim=0).view(-1)
+                        average_max_err_loss = max_err_losses_tensor.mean().item()
+                        tensorboard_writer.add_scalar('train/max_err_loss', max_err_loss.item(), num_iteration)
+                        tensorboard_writer.add_scalar('train/max_err_loss_avg', average_max_err_loss, num_iteration)
+
 
                     print ("Epoch [{}/{}], Step [{}/{}] Losses: {:.6f} {:.6f} {:.6f}, Avg.: {:.6f} {:.6f} {:.6f}"
                            .format(epoch+1, args.epochs, i+1, total_step, offset_loss.item(), angle_loss.item(), loss.item(),
@@ -578,9 +649,14 @@ if __name__ == '__main__':
             losses = []
             offset_losses = []
             angle_losses = []
+            offset_ema_losses = []
+            angle_ema_losses = []
+            offset_dif_losses = []
+            angle_dif_losses = []
             temp_offset_losses = []
             temp_angle_losses = []
             confidence_losses = []
+            max_err_losses = []
 
             all_horizon_errors = []
 
@@ -588,6 +664,12 @@ if __name__ == '__main__':
                 images = sample['images'].to(device)
                 offsets = sample['offsets'].to(device)
                 angles = sample['angles'].to(device)
+                if args.ema > 0:
+                    offsets_ema = sample['offsets_ema'].to(device)
+                    angles_ema = sample['angles_ema'].to(device)
+                    offsets_dif = offsets - offsets_ema
+                    angles_dif = angles - angles_ema
+                    
 
                 if args.confidence:
                     output_offsets, output_angles, output_confidence = model(images, use_dropblock=False)
@@ -595,11 +677,31 @@ if __name__ == '__main__':
                     confidence_loss = torch.nn.CrossEntropyLoss()(output_confidence.view(-1, 2), confidence_target)
                     confidence_losses += [confidence_loss]
                 else:
-                    output_offsets, output_angles = model(images, use_dropblock=False)
+                    if args.ema > 0:
+                        output_offsets_dif, output_angles_dif, output_offsets_ema, output_angles_ema = \
+                            model(images, use_dropblock=False)
+                    else:
+                        output_offsets, output_angles = \
+                            model(images, use_dropblock=False)
+
+                if args.ema > 0:
+                    output_offsets = output_offsets_ema + output_offsets_dif
+                    output_angles = output_angles_ema + output_angles_dif
+                    offset_ema_loss = criterion(output_offsets_ema, offsets_ema)
+                    angle_ema_loss = criterion(output_angles_ema, angles_ema)
+                    offset_dif_loss = criterion(output_offsets_dif, offsets_dif)
+                    angle_dif_loss = criterion(output_angles_dif, angles_dif)
 
                 offset_loss = criterion(output_offsets, offsets)
                 angle_loss = criterion(output_angles, angles)
+
                 loss = offset_loss + angle_loss * args.angle_loss_weight
+                if args.ema > 0:
+                    loss = offset_ema_loss + angle_ema_loss * args.angle_loss_weight + \
+                           offset_dif_loss + angle_dif_loss * args.angle_loss_weight
+                else:
+                    loss = offset_loss + angle_loss * args.angle_loss_weight
+                    
                 if args.temporal_loss:
                     temp_offset_loss = temp_criterion(output_offsets, offsets)
                     temp_angle_loss = temp_criterion(output_angles, angles)
@@ -610,6 +712,16 @@ if __name__ == '__main__':
                 if args.confidence:
                     loss += confidence_loss
 
+                if args.max_error_loss:
+                    hl_true, hr_true = calc_hlr(offsets, angles)
+                    hl_estm, hr_estm = calc_hlr(output_offsets, output_angles)
+                    hl_err = F.l1_loss(hl_estm, hl_true, size_average=False, reduce=False)
+                    hr_err = F.l1_loss(hr_estm, hr_true, size_average=False, reduce=False)
+                    h_errs = torch.max(hl_err, hr_err)
+                    max_err_loss = torch.mean(h_errs)
+                    loss += max_err_loss
+                    max_err_losses += [max_err_loss]
+
                 all_horizon_errors += horizon_error_function(output_angles.cpu().detach().numpy(),
                                                              output_offsets.cpu().detach().numpy(),
                                                              angles.cpu().detach().numpy(),
@@ -618,6 +730,11 @@ if __name__ == '__main__':
                 losses.append(loss.item())
                 offset_losses.append(offset_loss.item())
                 angle_losses.append(angle_loss.item())
+                if args.ema > 0:
+                    offset_ema_losses.append(offset_ema_loss.item())
+                    angle_ema_losses.append(angle_ema_loss.item())
+                    offset_dif_losses.append(offset_dif_loss.item())
+                    angle_dif_losses.append(angle_dif_loss.item())
 
                 # if (idx+1) % 10 == 0:
                 #     print(idx+1)
@@ -625,6 +742,11 @@ if __name__ == '__main__':
             average_loss = np.mean(losses)
             average_offset_loss = np.mean(offset_losses)
             average_angle_loss = np.mean(angle_losses)
+            if args.ema > 0:
+                average_offset_ema_loss = np.mean(offset_ema_losses)
+                average_angle_ema_loss = np.mean(angle_ema_losses)
+                average_offset_dif_loss = np.mean(offset_dif_losses)
+                average_angle_dif_loss = np.mean(angle_dif_losses)
             if args.temporal_loss:
                 temp_average_offset_loss = np.mean(temp_offset_losses)
                 temp_average_angle_loss = np.mean(temp_angle_losses)
@@ -636,6 +758,12 @@ if __name__ == '__main__':
                 average_confidence_loss = confidence_losses_tensor.mean().item()
                 tensorboard_writer.add_scalar('val/confidence_loss', confidence_loss.item(), num_iteration)
                 tensorboard_writer.add_scalar('val/confidence_loss_avg', average_confidence_loss, num_iteration)
+
+            if args.max_error_loss:
+                max_err_losses_tensor = torch.stack(max_err_losses, dim=0).view(-1)
+                average_max_err_loss = max_err_losses_tensor.mean().item()
+                tensorboard_writer.add_scalar('val/max_err_loss', max_err_loss.item(), num_iteration)
+                tensorboard_writer.add_scalar('val/max_err_loss_avg', average_max_err_loss, num_iteration)
 
             error_arr = np.array(all_horizon_errors)
             error_arr_idx = np.argsort(error_arr)
@@ -682,6 +810,11 @@ if __name__ == '__main__':
             tensorboard_writer.add_scalar('val/loss_avg', average_loss, num_iteration)
             tensorboard_writer.add_scalar('val/offset_loss_avg', average_offset_loss, num_iteration)
             tensorboard_writer.add_scalar('val/angle_loss_avg', average_angle_loss, num_iteration)
+            if args.ema > 0:
+                tensorboard_writer.add_scalar('val/offset_ema_loss_avg', average_offset_ema_loss, num_iteration)
+                tensorboard_writer.add_scalar('val/angle_ema_loss_avg', average_angle_ema_loss, num_iteration)
+                tensorboard_writer.add_scalar('val/offset_dif_loss_avg', average_offset_dif_loss, num_iteration)
+                tensorboard_writer.add_scalar('val/angle_dif_loss_avg', average_angle_dif_loss, num_iteration)
             if args.temporal_loss:
                 tensorboard_writer.add_scalar('val/temp_offset_loss_avg', temp_average_offset_loss, num_iteration)
                 tensorboard_writer.add_scalar('val/temp_angle_loss_avg', temp_average_angle_loss, num_iteration)
