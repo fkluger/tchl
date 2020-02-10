@@ -163,8 +163,6 @@ class ResNetPlusLSTM(resnet.ResNet):
 
         self.fov_increase = 0
 
-        self.dropblock = DropBlock2D()
-
         self.fc = None
         self.fc_ = None
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
@@ -200,10 +198,7 @@ class ResNetPlusLSTM(resnet.ResNet):
             self.head = FCHead(input_dim=512 * block.expansion,
                                output_dim=512 * block.expansion)
 
-    def set_dropblock_prob(self, prob):
-        self.dropblock.keep_prob = prob
-
-    def forward(self, x, use_dropblock=False, get_features=False):
+    def forward(self, x, get_features=False):
 
         B = x.shape[0]
         S = x.shape[1]

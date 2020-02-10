@@ -1,5 +1,4 @@
 from resnet.resnet_plus_lstm import resnet18rnn
-# from datasets import kitti
 from kitti_horizon.kitti_horizon_torch import KITTIHorizon
 from datasets import hlw
 from utilities.tee import Tee
@@ -110,7 +109,7 @@ if __name__ == '__main__':
     parser.add_argument('--cutout', default=512, type=int, help='use cutout')
     parser.add_argument('--convlstm', dest='conv_lstm', action='store_true', help='use Conv LSTM layer')
     parser.add_argument('--angle_loss_weight', default=1., type=float, help='weighting of the angle (slope) loss')
-    parser.add_argument('--lstm_state_reduction', default=4., type=float, vhelp='reduction factor of LSTM state')
+    parser.add_argument('--lstm_state_reduction', default=4., type=float, help='reduction factor of LSTM state')
     parser.add_argument('--lstm_depth', default=2, type=int, help='number of LSTM cells')
     parser.add_argument('--load', default=None, type=str, help='load pretrained model')
     parser.add_argument('--eval', dest='eval', action='store_true', help='run single validation step (no training)')
@@ -242,7 +241,7 @@ if __name__ == '__main__':
     ])
 
     if args.set == 'kitti':
-        train_dataset = KITTIHorizon(root_dir=args.datase_path, csv_file=csv_base + "/train.csv",
+        train_dataset = KITTIHorizon(root_dir=args.dataset_path, csv_file=csv_base + "/train.csv",
                                      seq_length=args.seqlength,
                                      fill_up=True, transform=tfs)
         val_dataset = KITTIHorizon(root_dir=args.dataset_path, augmentation=False, csv_file=csv_base + "/val.csv",
@@ -273,7 +272,7 @@ if __name__ == '__main__':
     curr_batch_size = args.batch
     best_val_loss = 10000.
 
-    calc_hlr = calc_horizon_leftright(width=WIDTH, height=HEIGHT)
+    calc_hlr = calc_horizon_leftright(width=args.image_width, height=args.image_height)
 
     best_auc = {'epoch': 0, 'max_err': np.inf, 'auc': 0}
     best_err = {'epoch': 0, 'max_err': np.inf, 'auc': 0}
