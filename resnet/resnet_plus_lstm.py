@@ -1,7 +1,6 @@
 from torchvision.models import resnet
 import torch.nn.functional as F
 from torch.utils import model_zoo
-from resnet.DropBlock import DropBlock2D
 from resnet.convlstm import *
 
 

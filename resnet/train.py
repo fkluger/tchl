@@ -389,12 +389,8 @@ if __name__ == '__main__':
 
                 image_count += images.shape[0] * images.shape[1]
 
-                if args.ema > 0:
-                    output_offsets_dif, output_angles_dif, output_offsets_ema, output_angles_ema = \
-                        model(images)
-                else:
-                    output_offsets, output_angles = \
-                        model(images)
+                output_offsets, output_angles = \
+                    model(images)
 
                 offset_loss = criterion(output_offsets, offsets)
                 angle_loss = criterion(output_angles, angles)
