@@ -1,5 +1,4 @@
-from resnet.resnet_plus_lstm import resnet18rnn, resnet50rnn, resnet34rnn
-from resnet.convlstm import convlstmresnet9
+from resnet.resnet_plus_lstm import resnet18rnn
 from datasets import kitti
 from datasets import hlw
 from utilities.tee import Tee
@@ -12,8 +11,6 @@ import time
 import platform
 import shutil
 import sklearn.metrics
-from torch.nn.modules.loss import _Loss
-from torch.nn import functional as F
 import argparse
 from utilities.losses import *
 import random
@@ -154,25 +151,15 @@ if __name__ == '__main__':
 
     if args.net == 'res18':
         modelfun = resnet18rnn
-    elif args.net == 'res34':
-        modelfun = resnet34rnn
-    elif args.net == 'res50':
-        modelfun = resnet50rnn
-    elif args.net == 'convlstm9':
-        model = convlstmresnet9(device=device, batch_norm=args.bn, hidden_plane_reduction=args.lstm_state_reduction
-                                ).to(device)
     else:
         assert False
 
-    model = modelfun(True, regional_pool=None, use_fc=False, use_convlstm=args.conv_lstm,
-                     width=WIDTH, height=HEIGHT, trainable_lstm_init=False,
-                     conv_lstm_skip=False, confidence=False, second_head=False,
-                     relu_lstm=False, second_head_fc=False, lstm_bn=False, lstm_skip=args.skip,
-                     lstm_bias=args.bias, lstm_peephole=False, ar=False, kalman=False,
-                     lstm_state_reduction=args.lstm_state_reduction, bn=True, load=not(args.nomzload),
-                     h_skip=False, lstm_skip2=False, lstm_depth=args.lstm_depth,
-                     lstm_simple_skip=args.simple_skip, lstm_mem=args.lstm_mem, layernorm=False,
-                     lstm_leakyrelu=False).to(device)
+    model = modelfun(True, use_fc=False, use_convlstm=args.conv_lstm,
+                     lstm_skip=args.skip,
+                     lstm_bias=args.bias,
+                     lstm_state_reduction=args.lstm_state_reduction, load=not(args.nomzload),
+                     lstm_depth=args.lstm_depth,
+                     lstm_simple_skip=args.simple_skip, lstm_mem=args.lstm_mem).to(device)
 
     if args.load is not None:
         load_from_path = args.load
