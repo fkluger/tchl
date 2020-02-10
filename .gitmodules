@@ -1,0 +1,3 @@
+[submodule "kitti_horizon"]
+	path = kitti_horizon
+	url = https://github.com/fkluger/kitti_horizon.git

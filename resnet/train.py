@@ -1,5 +1,6 @@
 from resnet.resnet_plus_lstm import resnet18rnn
-from datasets import kitti
+# from datasets import kitti
+from kitti_horizon.kitti_horizon_torch import KITTIHorizon
 from datasets import hlw
 from utilities.tee import Tee
 from torch import nn
@@ -40,7 +41,8 @@ def update_lr(optimizer, lr):
 
 
 def update_batchsize(loader, batch_size):
-    loader = torch.utils.data.DataLoader(dataset=loader.dataset, batch_size=batch_size, shuffle=True, num_workers=loader.num_workers)
+    loader = torch.utils.data.DataLoader(dataset=loader.dataset, batch_size=batch_size, shuffle=True,
+                                         num_workers=loader.num_workers)
     return loader
 
 
@@ -51,38 +53,76 @@ def save_checkpoint(state, is_best, folder, epoch, loss):
         shutil.copyfile(filename, folder + '/model_best.ckpt')
 
 
+class Cutout(object):
+    def __init__(self, length, bias=False):
+        self.length = length
+        self.central_bias = bias
+
+    def __call__(self, img):
+        h, w = img.size(1), img.size(2)
+        mask = np.ones((h, w), np.float32)
+
+        if self.central_bias:
+            x = int(np.around(w / 4. * np.random.rand(1) + w / 2.))
+            y = int(np.around(h / 4. * np.random.rand(1) + h / 2.))
+
+        else:
+            y = np.random.randint(h)
+            x = np.random.randint(w)
+
+        lx = np.random.randint(1, self.length)
+        ly = np.random.randint(1, self.length)
+
+        y1 = np.clip(y - ly // 2, 0, h)
+        y2 = np.clip(y + ly // 2, 0, h)
+        x1 = np.clip(x - lx // 2, 0, w)
+        x2 = np.clip(x + lx // 2, 0, w)
+
+        mask[y1: y2, x1: x2] = 0.
+        mask = torch.from_numpy(mask)
+        mask = mask.expand_as(img)
+        img *= mask
+        return img
+
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--net', default='res18', type=str, metavar='NET', help='network type')
-    parser.add_argument('--set', default='kitti', type=str, metavar='DS', help='dataset')
-    parser.add_argument('--gpu', default='0', type=str, metavar='DS', help='dataset')
-    parser.add_argument('--epochs', default=160, type=int, metavar='N', help='num epochs')
-    parser.add_argument('--baselr', default=0.1 / 128, type=float, metavar='lr', help='base learning rate')
-    parser.add_argument('--lr_reduction', default=1e-2, type=float, metavar='lr', help='base learning rate')
-    parser.add_argument('--seqlength', default=32, type=int, metavar='N', help='sequence length')
-    parser.add_argument('--seqlength_val', default=512, type=int, metavar='N', help='sequence length')
-    parser.add_argument('--batch', default=4, type=int, metavar='B', help='batch size')
-    parser.add_argument('--batch_val', default=1, type=int, metavar='B', help='batch size')
-    parser.add_argument('--optimizer', default='sgd', type=str, metavar='optm', help='optimizer')
-    parser.add_argument('--loss', default='huber', type=str, metavar='LF', help='loss function')
-    parser.add_argument('--lossmax', default='l1', type=str, metavar='LF', help='loss function')
-    parser.add_argument('--seed', default=1, type=int, metavar='S', help='random seed')
-    parser.add_argument('--downscale', default=2, type=float, metavar='D', help='downscale factor')
-    parser.add_argument('--cutout', default=512, type=int, help='use cutout', nargs='?', dest='cutout', const=512)
+    parser.add_argument('--dataset_path', default="/data/kluger/tmp/kitti_horizon_test", type=str,
+                        help='path to preprocessed dataset')
+    parser.add_argument('--checkpoint_path', default="/data/kluger/checkpoints/horizon_sequences_test", type=str,
+                        help='folder where checkpoints will be stored')
+    parser.add_argument('--set', default='kitti', type=str, help='dataset: kitti or hlw')
+    parser.add_argument('--image_width', default=625, type=int, help='image width')
+    parser.add_argument('--image_height', default=190, type=int, help='image height')
+    parser.add_argument('--gpu', default='0', type=str, help='GPU ID')
+    parser.add_argument('--epochs', default=160, type=int, help='num epochs')
+    parser.add_argument('--baselr', default=0.1 / 128, type=float, help='base learning rate')
+    parser.add_argument('--lr_reduction', default=1e-2, type=float, help='min. learning rate')
+    parser.add_argument('--seqlength', default=32, type=int, help='sequence length')
+    parser.add_argument('--seqlength_val', default=512, type=int, metavar='N', help='sequence length (validation)')
+    parser.add_argument('--batch', default=4, type=int, help='batch size')
+    parser.add_argument('--batch_val', default=1, type=int, help='batch size (validation)')
+    parser.add_argument('--optimizer', default='sgd', type=str, help='optimizer: sgd or adam')
+    parser.add_argument('--loss', default='huber', type=str, help='loss function')
+    parser.add_argument('--lossmax', default='l1', type=str, help='loss function (for max. horizon error)')
+    parser.add_argument('--seed', default=1, type=int, help='random seed')
+    parser.add_argument('--cutout', default=512, type=int, help='use cutout')
     parser.add_argument('--convlstm', dest='conv_lstm', action='store_true', help='use Conv LSTM layer')
-    parser.add_argument('--workers', default=3, type=int, metavar='W', help='number of workers')
-    parser.add_argument('--angle_loss_weight', default=1., type=float, metavar='S', help='random subsampling factor')
-    parser.add_argument('--lstm_state_reduction', default=4., type=float, metavar='S', help='random subsampling factor')
-    parser.add_argument('--lstm_depth', default=2, type=int, metavar='S', help='random subsampling factor')
-    parser.add_argument('--load', default=None, type=str, metavar='DS', help='dataset')
-    parser.add_argument('--eval', dest='eval', action='store_true', help='')
-    parser.add_argument('--skip', dest='skip', action='store_true', help='')
-    parser.add_argument('--bias', dest='bias', action='store_true', help='')
-    parser.add_argument('--max_error_loss', dest='max_error_loss', action='store_true', help='')
-    parser.add_argument('--max_error_loss_only', dest='max_error_loss_only', action='store_true', help='')
-    parser.add_argument('--no_modelzoo_load', dest='nomzload', action='store_true', help='')
-    parser.add_argument('--simple_skip', dest='simple_skip', action='store_true', help='')
+    parser.add_argument('--angle_loss_weight', default=1., type=float, help='weighting of the angle (slope) loss')
+    parser.add_argument('--lstm_state_reduction', default=4., type=float, vhelp='reduction factor of LSTM state')
+    parser.add_argument('--lstm_depth', default=2, type=int, help='number of LSTM cells')
+    parser.add_argument('--load', default=None, type=str, help='load pretrained model')
+    parser.add_argument('--eval', dest='eval', action='store_true', help='run single validation step (no training)')
+    parser.add_argument('--skip', dest='skip', action='store_true', help='enable skip connection')
+    parser.add_argument('--max_error_loss', dest='max_error_loss', action='store_true',
+                        help='use max horizon error loss')
+    parser.add_argument('--max_error_loss_only', dest='max_error_loss_only', action='store_true',
+                        help='only use max horizon error loss')
+    parser.add_argument('--no_modelzoo_load', dest='nomzload', action='store_true',
+                        help='do not load NN weights pretrained on imagenet')
+    parser.add_argument('--simple_skip', dest='simple_skip', action='store_true', help='enable naive skip connection')
+    parser.add_argument('--net', default='res18', type=str, help='network type')
 
     args = parser.parse_args()
 
@@ -95,59 +135,23 @@ if __name__ == '__main__':
     torch.backends.cudnn.deterministic = True
 
     if args.set == 'kitti':
-        DS = kitti
         pixel_mean = [0.362365, 0.377767, 0.366744]
     elif args.set == 'hlw':
-        DS = hlw
         pixel_mean = [0.469719773, 0.462005855, 0.454649294]
     else:
         assert False
-
-    WIDTH = int(DS.WIDTH // args.downscale)
-    HEIGHT = int(DS.HEIGHT // args.downscale)
 
     learning_rate = args.baselr * args.batch * args.seqlength
 
     images_per_batch = args.batch * args.seqlength
 
-    workers = args.workers
-
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    if 'daidalos' in hostname:
-        target_base = "/tnt/data/kluger/checkpoints/horizon_sequences"
-        root_dir = "/tnt/data/kluger/datasets/kitti/horizons" if args.set == 'kitti' else "/tnt/data/scene_understanding/HLW"
-        csv_base = "/tnt/home/kluger/tmp/kitti_split_%d" % 5
-        pdf_file = "/tnt/home/kluger/tmp/kitti_split/data_pdfs.pkl"
-    elif 'athene' in hostname:
-        target_base = "/data/kluger/checkpoints/horizon_sequences"
-        root_dir = "/phys/intern/kluger/tmp/kitti/horizons" if args.set == 'kitti' else "/phys/intern/kluger/tmp/HLW"
-        csv_base = "/home/kluger/tmp/kitti_split_%d" % 5
-        pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
-    elif 'hekate' in hostname:
-        target_base = "/data/kluger/checkpoints/horizon_sequences"
-        root_dir = "/phys/ssd/kitti/horizons" if args.set == 'kitti' else "/data/scene_understanding/HLW"
-        csv_base = "/home/kluger/tmp/kitti_split_%d" % 5
-        pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
-    elif 'persephone' in hostname or 'hades' in hostname:
-        target_base = "/data/kluger/checkpoints/horizon_sequences"
-        root_dir = "/phys/ssd/kluger/tmp/kitti/horizons" if args.set == 'kitti' else "/phys/ssd/kluger/tmp/HLW"
-        csv_base = "/home/kluger/tmp/kitti_split_%d" % 5
-        pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
-    else:
-        target_base = "/data/kluger/checkpoints/horizon_sequences"
-        root_dir = "/data/kluger/datasets/kitti/horizons" if args.set == 'kitti' else "/phys/ssd/kluger/tmp/HLW"
-        csv_base = "/home/kluger/tmp/kitti_split_%d" % 5
-        pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
+    csv_base = "./kitti_horizon/split/"
 
-    if args.downscale > 1 and args.set == 'kitti':
-        root_dir += "_s%.3f" % (1./args.downscale)
-
-    pdf_file = None
-
-    target_directory = target_base + "/%s/%s/d%d/%d/" % (args.set, args.net, args.downscale, args.seqlength)
+    target_directory = args.checkpoint_path + "/%s/%s/%d/" % (args.set, args.net, args.seqlength)
 
     date_and_time = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
 
@@ -171,8 +175,7 @@ if __name__ == '__main__':
 
     model = modelfun(True, use_fc=False, use_convlstm=args.conv_lstm,
                      lstm_skip=args.skip,
-                     lstm_bias=args.bias,
-                     lstm_state_reduction=args.lstm_state_reduction, load=not(args.nomzload),
+                     lstm_state_reduction=args.lstm_state_reduction, load=not (args.nomzload),
                      lstm_depth=args.lstm_depth,
                      lstm_simple_skip=args.simple_skip).to(device)
 
@@ -209,59 +212,58 @@ if __name__ == '__main__':
         assert False
 
     if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=1e-4)
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate,
+                                     weight_decay=1e-4)
     elif args.optimizer == 'sgd':
-        optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=1e-4, momentum=0.9)
+        optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate,
+                                    weight_decay=1e-4, momentum=0.9)
     else:
         assert False
 
-    horizon_error_function = horizon_error(WIDTH, HEIGHT)
+    horizon_error_function = horizon_error(args.image_width, args.image_height)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, int(args.epochs), eta_min=learning_rate*args.lr_reduction)
+        optimizer, int(args.epochs), eta_min=learning_rate * args.lr_reduction)
 
     max_err_scheduler = CosineAnnealingCustom(0, 1., args.epochs)
 
     tfs = transforms.Compose([
-                transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.25),
-                transforms.RandomGrayscale(p=0.1),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=pixel_mean, std=[1., 1., 1.]),
-            ])
+        transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.25),
+        transforms.RandomGrayscale(p=0.1),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=pixel_mean, std=[1., 1., 1.]),
+    ])
     if args.cutout > 0:
-        tfs.transforms.append(DS.Cutout(length=args.cutout, bias=False))
+        tfs.transforms.append(Cutout(length=args.cutout, bias=False))
 
     tfs_val = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize(mean=pixel_mean, std=[1., 1., 1.]),
-            ])
+        transforms.ToTensor(),
+        transforms.Normalize(mean=pixel_mean, std=[1., 1., 1.]),
+    ])
 
     if args.set == 'kitti':
+        train_dataset = KITTIHorizon(root_dir=args.datase_path, csv_file=csv_base + "/train.csv",
+                                     seq_length=args.seqlength,
+                                     fill_up=True, transform=tfs)
+        val_dataset = KITTIHorizon(root_dir=args.dataset_path, augmentation=False, csv_file=csv_base + "/val.csv",
+                                   seq_length=args.seqlength_val, fill_up=False, transform=tfs_val)
 
-        train_dataset = DS.KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, random_subsampling=1.,
-                                             csv_file=csv_base + "/train.csv", seq_length=args.seqlength,
-                                             im_height=HEIGHT, im_width=WIDTH, fill_up=True,
-                                             scale=1./args.downscale, transform=tfs, get_split_data=False,
-                                             overlap=0, zero_start=False)
-        val_dataset = DS.KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False,
-                                           csv_file=csv_base + "/val.csv", seq_length=args.seqlength_val,
-                                           im_height=HEIGHT, im_width=WIDTH, fill_up=False,
-                                           scale=1./args.downscale, transform=tfs_val, get_split_data=False,
-                                           zero_start=False)
     elif args.set == 'hlw':
-
-        train_dataset = DS.HLWDataset(root_dir=root_dir, transform=tfs, augmentation=True, set='train', scale=1./args.downscale)
-        val_dataset = DS.HLWDataset(root_dir=root_dir, augmentation=False, transform=tfs_val, set='val', scale=1./args.downscale)
+        assert False, "not implemented"
+        train_dataset = DS.HLWDataset(root_dir=root_dir, transform=tfs, augmentation=True, set='train',
+                                      scale=1. / args.downscale)
+        val_dataset = DS.HLWDataset(root_dir=root_dir, augmentation=False, transform=tfs_val, set='val',
+                                    scale=1. / args.downscale)
     else:
         assert False
 
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                                batch_size=args.batch,
-                                               shuffle=True, num_workers=workers)
+                                               shuffle=True, num_workers=4)
 
     val_loader = torch.utils.data.DataLoader(dataset=val_dataset,
-                                              batch_size=args.batch_val,
-                                              shuffle=False, num_workers=workers)
+                                             batch_size=args.batch_val,
+                                             shuffle=False, num_workers=4)
 
     print(checkpoint_directory)
 
@@ -273,8 +275,8 @@ if __name__ == '__main__':
 
     calc_hlr = calc_horizon_leftright(width=WIDTH, height=HEIGHT)
 
-    best_auc = {'epoch': 0, 'max_err': np.inf, 'auc':0}
-    best_err = {'epoch': 0, 'max_err': np.inf, 'auc':0}
+    best_auc = {'epoch': 0, 'max_err': np.inf, 'auc': 0}
+    best_err = {'epoch': 0, 'max_err': np.inf, 'auc': 0}
 
     tensorboard_directory = checkpoint_directory + "/tensorboard/"
     if not os.path.exists(tensorboard_directory):
@@ -282,7 +284,6 @@ if __name__ == '__main__':
     tensorboard_writer = SummaryWriter(tensorboard_directory)
 
     for epoch in range(args.epochs):
-
 
         if not args.eval:
             scheduler.step()
@@ -325,7 +326,8 @@ if __name__ == '__main__':
                     if args.max_error_loss_only:
                         loss = max_err_loss
                     else:
-                        loss = max_err_scheduler.get(epoch) * max_err_loss * scalemax + (1-max_err_scheduler.get(epoch)) * loss
+                        loss = max_err_scheduler.get(epoch) * max_err_loss * scalemax + (
+                                    1 - max_err_scheduler.get(epoch)) * loss
 
                 # Backward and optimize
                 optimizer.zero_grad()
@@ -336,7 +338,7 @@ if __name__ == '__main__':
                 offset_losses.append(offset_loss)
                 angle_losses.append(angle_loss)
 
-                if (i+1) % 100 == 0:
+                if (i + 1) % 100 == 0:
                     # average_loss = np.mean(losses)
                     losses_tensor = torch.stack(losses, dim=0).view(-1)
                     average_loss = losses_tensor.mean().item()
@@ -346,17 +348,16 @@ if __name__ == '__main__':
                     angle_losses_tensor = torch.stack(angle_losses, dim=0).view(-1)
                     average_angle_loss = angle_losses_tensor.mean().item()
 
-                    num_iteration = int((epoch*total_step + i) * images_per_batch / 128.)
+                    num_iteration = int((epoch * total_step + i) * images_per_batch / 128.)
 
                     max_err_losses_tensor = torch.stack(max_err_losses, dim=0).view(-1)
                     average_max_err_loss = max_err_losses_tensor.mean().item()
                     tensorboard_writer.add_scalar('train/max_err_loss', max_err_loss.item(), num_iteration)
                     tensorboard_writer.add_scalar('train/max_err_loss_avg', average_max_err_loss, num_iteration)
 
-
-                    print ("Epoch [{}/{}], Step [{}/{}] Losses: {:.6f} {:.6f} {:.6f}, Avg.: {:.6f} {:.6f} {:.6f}"
-                           .format(epoch+1, args.epochs, i+1, total_step, offset_loss.item(), angle_loss.item(), loss.item(),
-                                   average_offset_loss, average_angle_loss, average_loss), end="\r")
+                    print("Epoch [{}/{}], Step [{}/{}] Losses: {:.6f} {:.6f} {:.6f}, Avg.: {:.6f} {:.6f} {:.6f}"
+                          .format(epoch + 1, args.epochs, i + 1, total_step, offset_loss.item(), angle_loss.item(),
+                                  loss.item(), average_offset_loss, average_angle_loss, average_loss), end="\r")
 
                     tensorboard_writer.add_scalar('train/loss', loss.item(), num_iteration)
                     tensorboard_writer.add_scalar('train/offset_loss', offset_loss.item(), num_iteration)
@@ -387,7 +388,7 @@ if __name__ == '__main__':
                 offsets = sample['offsets'].to(device)
                 angles = sample['angles'].to(device)
 
-                image_count += images.shape[0]*images.shape[1]
+                image_count += images.shape[0] * images.shape[1]
 
                 if args.ema > 0:
                     output_offsets_dif, output_angles_dif, output_offsets_ema, output_angles_ema = \
@@ -413,7 +414,8 @@ if __name__ == '__main__':
                     if args.max_error_loss_only:
                         loss = max_err_loss * scalemax
                     else:
-                        loss = max_err_scheduler.get(epoch) * scalemax * max_err_loss + (1 - max_err_scheduler.get(epoch)) * loss
+                        loss = max_err_scheduler.get(epoch) * scalemax * max_err_loss + (
+                                    1 - max_err_scheduler.get(epoch)) * loss
 
                 all_horizon_errors += horizon_error_function(output_angles,
                                                              output_offsets,
@@ -498,13 +500,12 @@ if __name__ == '__main__':
         best_val_loss = average_loss if is_best else best_val_loss
 
         save_checkpoint({
-                'epoch': epoch,
-                'args': args,
-                'state_dict': model.module.state_dict(),
-                'val_loss': average_loss,
-                'optimizer' : optimizer.state_dict(),
-            }, is_best, checkpoint_directory, epoch, average_loss)
+            'epoch': epoch,
+            'args': args,
+            'state_dict': model.module.state_dict(),
+            'val_loss': average_loss,
+            'optimizer': optimizer.state_dict(),
+        }, is_best, checkpoint_directory, epoch, average_loss)
 
     tensorboard_writer.close()
     log.__del__()
-
