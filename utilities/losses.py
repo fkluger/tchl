@@ -1,6 +1,8 @@
 from torch.nn.modules.loss import _Loss
 import torch
 import math
+import numpy as np
+
 
 class SqrtL1Loss(_Loss):
 
@@ -22,3 +24,42 @@ class SqrtL1Loss(_Loss):
         if not (self.reduce == False):
             return torch.mean(losses)
         return losses
+
+
+def calc_horizon_leftright(width, height):
+    wh = 0.5 * width*1./height
+
+    def f(offset, angle):
+        term2 = wh * torch.tan(torch.clamp(angle, -math.pi/3., math.pi/3.))
+        return offset + 0.5 + term2, offset + 0.5 - term2
+
+    return f
+
+
+def horizon_error(width, height):
+
+    calc_hlr = calc_horizon_leftright(width, height)
+
+    def f(estm_ang, estm_off, true_ang, true_off):
+        errors = []
+
+        for b in range(estm_ang.shape[0]):
+            for s in range(estm_ang.shape[1]):
+
+                offset = true_off[b,s].squeeze()
+                offset_estm = estm_off[b,s].squeeze()
+                angle = true_ang[b,s].squeeze()
+                angle_estm = estm_ang[b,s].squeeze()
+
+                ylt, yrt = calc_hlr(offset, angle)
+                yle, yre = calc_hlr(offset_estm, angle_estm)
+
+                err1 = np.abs((ylt-yle).cpu().detach().numpy())
+                err2 = np.abs((yrt-yre).cpu().detach().numpy())
+
+                err = np.maximum(err1, err2)
+                errors += [err]
+
+        return errors
+
+    return f
