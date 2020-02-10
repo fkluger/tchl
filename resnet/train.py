@@ -7,7 +7,6 @@ from torchvision import transforms
 from tensorboardX import SummaryWriter
 import datetime
 import os
-import time
 import platform
 import shutil
 import sklearn.metrics
@@ -35,6 +34,23 @@ def adjust_learning_rate(optimizer, lr):
         param_group['lr'] = lr
 
 
+def update_lr(optimizer, lr):
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+
+def update_batchsize(loader, batch_size):
+    loader = torch.utils.data.DataLoader(dataset=loader.dataset, batch_size=batch_size, shuffle=True, num_workers=loader.num_workers)
+    return loader
+
+
+def save_checkpoint(state, is_best, folder, epoch, loss):
+    filename = folder + "/" + "%03d_%.6f.ckpt" % (epoch, loss)
+    torch.save(state, filename)
+    if is_best:
+        shutil.copyfile(filename, folder + '/model_best.ckpt')
+
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='')
@@ -59,7 +75,6 @@ if __name__ == '__main__':
     parser.add_argument('--angle_loss_weight', default=1., type=float, metavar='S', help='random subsampling factor')
     parser.add_argument('--lstm_state_reduction', default=4., type=float, metavar='S', help='random subsampling factor')
     parser.add_argument('--lstm_depth', default=2, type=int, metavar='S', help='random subsampling factor')
-    parser.add_argument('--lstm_mem', default=0, type=int, metavar='S', help='random subsampling factor')
     parser.add_argument('--load', default=None, type=str, metavar='DS', help='dataset')
     parser.add_argument('--eval', dest='eval', action='store_true', help='')
     parser.add_argument('--skip', dest='skip', action='store_true', help='')
@@ -159,7 +174,7 @@ if __name__ == '__main__':
                      lstm_bias=args.bias,
                      lstm_state_reduction=args.lstm_state_reduction, load=not(args.nomzload),
                      lstm_depth=args.lstm_depth,
-                     lstm_simple_skip=args.simple_skip, lstm_mem=args.lstm_mem).to(device)
+                     lstm_simple_skip=args.simple_skip).to(device)
 
     if args.load is not None:
         load_from_path = args.load
@@ -189,7 +204,7 @@ if __name__ == '__main__':
         scalemax = 0.1
     elif args.lossmax == 'sqrt':
         criterionmax = SqrtL1Loss(size_average=False, reduce=False)
-        scalemax = 0.1#0.02
+        scalemax = 0.1
     else:
         assert False
 
@@ -237,6 +252,8 @@ if __name__ == '__main__':
 
         train_dataset = DS.HLWDataset(root_dir=root_dir, transform=tfs, augmentation=True, set='train', scale=1./args.downscale)
         val_dataset = DS.HLWDataset(root_dir=root_dir, augmentation=False, transform=tfs_val, set='val', scale=1./args.downscale)
+    else:
+        assert False
 
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                                batch_size=args.batch,
@@ -245,21 +262,6 @@ if __name__ == '__main__':
     val_loader = torch.utils.data.DataLoader(dataset=val_dataset,
                                               batch_size=args.batch_val,
                                               shuffle=False, num_workers=workers)
-
-    # For updating learning rate
-    def update_lr(optimizer, lr):
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-
-    def update_batchsize(loader, batch_size):
-        loader = torch.utils.data.DataLoader(dataset=loader.dataset, batch_size=batch_size, shuffle=True, num_workers=loader.num_workers)
-        return loader
-
-    def save_checkpoint(state, is_best, folder, epoch, loss):
-        filename = folder + "/" + "%03d_%.6f.ckpt" % (epoch, loss)
-        torch.save(state, filename)
-        if is_best:
-            shutil.copyfile(filename, folder + '/model_best.ckpt')
 
     print(checkpoint_directory)
 
@@ -295,8 +297,6 @@ if __name__ == '__main__':
             temp_angle_losses = []
             max_err_losses = []
 
-            tt0 = time.time()
-
             model.train()
             for i, sample in enumerate(train_loader):
 
@@ -311,7 +311,6 @@ if __name__ == '__main__':
 
                 loss = 0
 
-                # if args.max_error_loss:
                 hl_true, hr_true = calc_hlr(offsets, angles)
                 hl_estm, hr_estm = calc_hlr(output_offsets, output_angles)
                 hl_err = criterionmax(hl_estm, hl_true)
@@ -328,24 +327,11 @@ if __name__ == '__main__':
                     else:
                         loss = max_err_scheduler.get(epoch) * max_err_loss * scalemax + (1-max_err_scheduler.get(epoch)) * loss
 
-                tt3 = time.time()
-
                 # Backward and optimize
                 optimizer.zero_grad()
                 loss.backward()
-                tt4 = time.time()
                 optimizer.step()
-                tt5 = time.time()
 
-                # print('data loading : %f' % (tt01-tt0) )
-                # print('data to dev. : %f' % (tt1-tt01) )
-                # print('forward pass : %f' % (tt2-tt1) )
-                # print('loss calculat: %f' % (tt3-tt2) )
-                # print('backward pass: %f' % (tt4-tt3) )
-                # print('optimization : %f' % (tt5-tt4) )
-                # print("...")
-
-                # losses.append(loss.item())
                 losses.append(loss)
                 offset_losses.append(offset_loss)
                 angle_losses.append(angle_loss)
@@ -379,8 +365,6 @@ if __name__ == '__main__':
                     tensorboard_writer.add_scalar('train/offset_loss_avg', average_offset_loss, num_iteration)
                     tensorboard_writer.add_scalar('train/angle_loss_avg', average_angle_loss, num_iteration)
                     tensorboard_writer.add_scalar('learning_rate', scheduler.get_lr()[0], num_iteration)
-
-                tt0 = time.time()
 
         # test on validation set:
         model.eval()
@@ -520,7 +504,6 @@ if __name__ == '__main__':
                 'val_loss': average_loss,
                 'optimizer' : optimizer.state_dict(),
             }, is_best, checkpoint_directory, epoch, average_loss)
-
 
     tensorboard_writer.close()
     log.__del__()

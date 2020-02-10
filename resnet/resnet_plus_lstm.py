@@ -7,11 +7,9 @@ from resnet.convlstm import *
 
 class ConvLSTMHead(nn.Module):
 
-    def __init__(self, input_dim, hidden_dim, lstm_mem, skip, bias, depth,
+    def __init__(self, input_dim, hidden_dim, skip, bias, depth,
                  simple_skip):
         super(ConvLSTMHead, self).__init__()
-
-        self.lstm_mem = lstm_mem
 
         self.conv_lstm = ConvLSTMCellGeneral(input_dim=input_dim,
                                              hidden_dim=hidden_dim,
@@ -65,10 +63,6 @@ class ConvLSTMHead(nn.Module):
             c_state = self.lstm_init_c.view(1, -1, 1, 1).expand(B, -1, H, W)
 
             for s in range(S):
-
-                if self.lstm_mem > 0 and s % self.lstm_mem == 0:
-                    h_state = self.lstm_init_h.view(1, -1, 1, 1).expand(B, -1, H, W)
-                    c_state = self.lstm_init_c.view(1, -1, 1, 1).expand(B, -1, H, W)
 
                 if d == 0:
                     h_state, c_state, y_step = conv_lstm(x[:, s, :, :, :], (h_state, c_state))
@@ -161,8 +155,7 @@ class BasicBlockNoBN(nn.Module):
 
 class ResNetPlusLSTM(resnet.ResNet):
 
-    def __init__(self, block, layers, finetune=True, use_fc=False, use_convlstm=False,
-                 lstm_mem=0, lstm_skip=False,
+    def __init__(self, block, layers, finetune=True, use_fc=False, use_convlstm=False, lstm_skip=False,
                  lstm_bias=False, lstm_state_reduction=1., lstm_depth=1,
                  lstm_simple_skip=False):
 
@@ -175,8 +168,6 @@ class ResNetPlusLSTM(resnet.ResNet):
         self.fc = None
         self.fc_ = None
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-
-        self.lstm_mem = lstm_mem
 
         self.head = None
         self.head2 = None
@@ -202,11 +193,8 @@ class ResNetPlusLSTM(resnet.ResNet):
 
         if use_convlstm:
 
-            self.head = ConvLSTMHead(input_dim=planes,
-                                     hidden_dim=int(planes / lstm_state_reduction),
-                                     lstm_mem=lstm_mem, skip=lstm_skip,
-                                     bias=lstm_bias, depth=lstm_depth,
-                                     simple_skip=lstm_simple_skip)
+            self.head = ConvLSTMHead(input_dim=planes, hidden_dim=int(planes / lstm_state_reduction), skip=lstm_skip,
+                                     bias=lstm_bias, depth=lstm_depth, simple_skip=lstm_simple_skip)
 
         else:
             self.head = FCHead(input_dim=512 * block.expansion,
