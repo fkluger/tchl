@@ -154,8 +154,7 @@ if __name__ == '__main__':
 
     date_and_time = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
 
-    checkpoint_directory = target_directory + "b%d_" % args.batch + \
-                           ("nocutout_" if (not args.cutout) else ("biasedcutout_" if (False) else "")) + date_and_time
+    checkpoint_directory = target_directory + "b%d_" % args.batch + "_" + date_and_time
 
     if not os.path.exists(checkpoint_directory):
         os.makedirs(checkpoint_directory)
