@@ -63,3 +63,30 @@ def horizon_error(width, height):
         return errors
 
     return f
+
+
+class MaxErrorLoss(_Loss):
+    def __init__(self, size_average=True, reduce=True, reduction='elementwise_mean', from_start=False):
+        super(MaxErrorLoss, self).__init__(size_average, reduce, reduction)
+        self.from_start = from_start
+
+    def forward(self, input, target):
+
+        S = input.shape[1]
+
+        input_diffs = []
+        target_diffs = []
+
+        if self.from_start:
+            for s in range(1,S):
+                input_diffs += [input[:,s,:]-input[:,0,:]]
+                target_diffs += [target[:,s,:]-target[:,0,:]]
+        else:
+            for s in range(1,S):
+                input_diffs += [input[:,s,:]-input[:,s-1,:]]
+                target_diffs += [target[:,s,:]-target[:,s-1,:]]
+
+        target_diffs = torch.stack(target_diffs, dim=1)
+        input_diffs = torch.stack(input_diffs, dim=1)
+
+        return F.mse_loss(input_diffs, target_diffs, reduction=self.reduction)

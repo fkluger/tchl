@@ -38,116 +38,18 @@ def adjust_learning_rate(optimizer, lr):
         param_group['lr'] = lr
 
 
-class TemporalMSELoss(_Loss):
-    def __init__(self, size_average=True, reduce=True, reduction='elementwise_mean', from_start=False):
-        super(TemporalMSELoss, self).__init__(size_average, reduce, reduction)
-        self.from_start = from_start
-
-    def forward(self, input, target):
-
-        S = input.shape[1]
-
-        input_diffs = []
-        target_diffs = []
-
-        if self.from_start:
-            for s in range(1,S):
-                input_diffs += [input[:,s,:]-input[:,0,:]]
-                target_diffs += [target[:,s,:]-target[:,0,:]]
-        else:
-            for s in range(1,S):
-                input_diffs += [input[:,s,:]-input[:,s-1,:]]
-                target_diffs += [target[:,s,:]-target[:,s-1,:]]
-
-        target_diffs = torch.stack(target_diffs, dim=1)
-        input_diffs = torch.stack(input_diffs, dim=1)
-
-        return F.mse_loss(input_diffs, target_diffs, reduction=self.reduction)
-
-
-class MaxErrorLoss(_Loss):
-    def __init__(self, size_average=True, reduce=True, reduction='elementwise_mean', from_start=False):
-        super(MaxErrorLoss, self).__init__(size_average, reduce, reduction)
-        self.from_start = from_start
-
-    def forward(self, input, target):
-
-        S = input.shape[1]
-
-        input_diffs = []
-        target_diffs = []
-
-        if self.from_start:
-            for s in range(1,S):
-                input_diffs += [input[:,s,:]-input[:,0,:]]
-                target_diffs += [target[:,s,:]-target[:,0,:]]
-        else:
-            for s in range(1,S):
-                input_diffs += [input[:,s,:]-input[:,s-1,:]]
-                target_diffs += [target[:,s,:]-target[:,s-1,:]]
-
-        target_diffs = torch.stack(target_diffs, dim=1)
-        input_diffs = torch.stack(input_diffs, dim=1)
-
-        return F.mse_loss(input_diffs, target_diffs, reduction=self.reduction)
-
-
-class CalcConfidenceTarget(torch.nn.Module):
-    def __init__(self, max_error, device):
-        super(CalcConfidenceTarget, self).__init__()
-        self.max_error = max_error
-        self.device = device
-
-    def forward(self, input, target):
-
-        input = torch.squeeze(input)
-        target = torch.squeeze(target)
-
-        ones = torch.ones(input.shape, dtype=torch.long).to(self.device)
-        zero = torch.zeros(input.shape, dtype=torch.long).to(self.device)
-
-        diffs = (input-target)
-        diffs = diffs*diffs
-
-        target = torch.where(diffs < self.max_error, zero, ones)
-
-        return target.detach()
-
-# class SqrtL1Loss(_Loss):
-#
-#     __constants__ = ['reduction']
-#
-#     def __init__(self, size_average=None, reduce=None, reduction='mean', delta=0.25):
-#         self.reduce = reduce
-#         self.delta = 0.25
-#         self.a = 2*np.sqrt(delta)
-#         self.b = -delta
-#         super(SqrtL1Loss, self).__init__(size_average, reduce, reduction)
-#
-#     def forward(self, input, target):
-#         absdiff = torch.clamp(torch.abs(input - target), 0, 1000.)
-#         sqrt = self.a*torch.sqrt(absdiff)+self.b
-#
-#         losses = torch.where(absdiff <= self.delta, absdiff, sqrt)
-#
-#         if not (self.reduce == False):
-#             return torch.mean(losses)
-#         return losses
-#         # return F.l1_loss(input, target, reduction=self.reduction)
-
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--net', default='res18', type=str, metavar='NET', help='network type')
     parser.add_argument('--set', default='kitti', type=str, metavar='DS', help='dataset')
     parser.add_argument('--gpu', default='0', type=str, metavar='DS', help='dataset')
-    parser.add_argument('--finetune', dest='finetune', action='store_true', help='finetune the CNN')
-    parser.add_argument('--epochs', default=128, type=int, metavar='N', help='num epochs')
+    parser.add_argument('--epochs', default=160, type=int, metavar='N', help='num epochs')
     parser.add_argument('--baselr', default=0.1 / 128, type=float, metavar='lr', help='base learning rate')
     parser.add_argument('--lr_reduction', default=1e-2, type=float, metavar='lr', help='base learning rate')
-    parser.add_argument('--seqlength', default=1, type=int, metavar='N', help='sequence length')
+    parser.add_argument('--seqlength', default=32, type=int, metavar='N', help='sequence length')
     parser.add_argument('--seqlength_val', default=512, type=int, metavar='N', help='sequence length')
-    parser.add_argument('--batch', default=8 * 16, type=int, metavar='B', help='batch size')
+    parser.add_argument('--batch', default=4, type=int, metavar='B', help='batch size')
     parser.add_argument('--batch_val', default=1, type=int, metavar='B', help='batch size')
     parser.add_argument('--optimizer', default='sgd', type=str, metavar='optm', help='optimizer')
     parser.add_argument('--loss', default='huber', type=str, metavar='LF', help='loss function')
@@ -155,41 +57,20 @@ if __name__ == '__main__':
     parser.add_argument('--seed', default=1, type=int, metavar='S', help='random seed')
     parser.add_argument('--downscale', default=2, type=float, metavar='D', help='downscale factor')
     parser.add_argument('--cutout', default=512, type=int, help='use cutout', nargs='?', dest='cutout', const=512)
-    parser.add_argument('--fc', dest='fc_layer', action='store_true', help='use FC layer')
     parser.add_argument('--convlstm', dest='conv_lstm', action='store_true', help='use Conv LSTM layer')
-    parser.add_argument('--temploss', dest='temporal_loss', action='store_true', help='use temporal loss')
-    parser.add_argument('--temploss2', dest='temporal_loss_2', action='store_true', help='use temporal loss')
-    parser.add_argument('--templossonly', dest='temporal_loss_only', action='store_true', help='use temporal loss')
     parser.add_argument('--workers', default=3, type=int, metavar='W', help='number of workers')
-    parser.add_argument('--random_subsampling', default=1., type=float, metavar='S', help='random subsampling factor')
-    parser.add_argument('--conv_lstm_skip', dest='conv_lstm_skip', action='store_true', help='skip connection')
-    parser.add_argument('--trainable_lstm_init', dest='trainable_lstm_init', action='store_true', help='')
     parser.add_argument('--angle_loss_weight', default=1., type=float, metavar='S', help='random subsampling factor')
-    parser.add_argument('--lstm_state_reduction', default=1., type=float, metavar='S', help='random subsampling factor')
+    parser.add_argument('--lstm_state_reduction', default=4., type=float, metavar='S', help='random subsampling factor')
     parser.add_argument('--lstm_depth', default=2, type=int, metavar='S', help='random subsampling factor')
     parser.add_argument('--lstm_mem', default=0, type=int, metavar='S', help='random subsampling factor')
     parser.add_argument('--load', default=None, type=str, metavar='DS', help='dataset')
     parser.add_argument('--eval', dest='eval', action='store_true', help='')
-    parser.add_argument('--eval_train', dest='eval_train', action='store_true', help='')
-    parser.add_argument('--relulstm', dest='relulstm', action='store_true', help='')
-    parser.add_argument('--overlap', default=0, type=int, metavar='S', help='random subsampling factor')
-    parser.add_argument('--split', default=5, type=int, metavar='S', help='random subsampling factor')
-    parser.add_argument('--fchead2', dest='fchead2', action='store_true', help='')
-    parser.add_argument('--bn', dest='bn', action='store_true', help='')
     parser.add_argument('--skip', dest='skip', action='store_true', help='')
-    parser.add_argument('--skip2', dest='skip2', action='store_true', help='')
     parser.add_argument('--bias', dest='bias', action='store_true', help='')
-    parser.add_argument('--peephole', dest='peephole', action='store_true', help='')
     parser.add_argument('--max_error_loss', dest='max_error_loss', action='store_true', help='')
     parser.add_argument('--max_error_loss_only', dest='max_error_loss_only', action='store_true', help='')
-    parser.add_argument('--no_fill_up', dest='no_fill_up', action='store_true', help='')
-    parser.add_argument('--ar', dest='ar', action='store_true', help='')
-    parser.add_argument('--nobn', dest='nobn', action='store_true', help='')
     parser.add_argument('--no_modelzoo_load', dest='nomzload', action='store_true', help='')
-    parser.add_argument('--h_skip', dest='h_skip', action='store_true', help='')
     parser.add_argument('--simple_skip', dest='simple_skip', action='store_true', help='')
-    parser.add_argument('--layernorm', dest='layernorm', action='store_true', help='')
-    parser.add_argument('--lstm_leakyrelu', dest='lstm_leakyrelu', action='store_true', help='')
 
     args = parser.parse_args()
 
@@ -226,27 +107,27 @@ if __name__ == '__main__':
     if 'daidalos' in hostname:
         target_base = "/tnt/data/kluger/checkpoints/horizon_sequences"
         root_dir = "/tnt/data/kluger/datasets/kitti/horizons" if args.set == 'kitti' else "/tnt/data/scene_understanding/HLW"
-        csv_base = "/tnt/home/kluger/tmp/kitti_split_%d" % args.split
+        csv_base = "/tnt/home/kluger/tmp/kitti_split_%d" % 5
         pdf_file = "/tnt/home/kluger/tmp/kitti_split/data_pdfs.pkl"
     elif 'athene' in hostname:
         target_base = "/data/kluger/checkpoints/horizon_sequences"
         root_dir = "/phys/intern/kluger/tmp/kitti/horizons" if args.set == 'kitti' else "/phys/intern/kluger/tmp/HLW"
-        csv_base = "/home/kluger/tmp/kitti_split_%d" % args.split
+        csv_base = "/home/kluger/tmp/kitti_split_%d" % 5
         pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
     elif 'hekate' in hostname:
         target_base = "/data/kluger/checkpoints/horizon_sequences"
         root_dir = "/phys/ssd/kitti/horizons" if args.set == 'kitti' else "/data/scene_understanding/HLW"
-        csv_base = "/home/kluger/tmp/kitti_split_%d" % args.split
+        csv_base = "/home/kluger/tmp/kitti_split_%d" % 5
         pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
     elif 'persephone' in hostname or 'hades' in hostname:
         target_base = "/data/kluger/checkpoints/horizon_sequences"
         root_dir = "/phys/ssd/kluger/tmp/kitti/horizons" if args.set == 'kitti' else "/phys/ssd/kluger/tmp/HLW"
-        csv_base = "/home/kluger/tmp/kitti_split_%d" % args.split
+        csv_base = "/home/kluger/tmp/kitti_split_%d" % 5
         pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
     else:
         target_base = "/data/kluger/checkpoints/horizon_sequences"
         root_dir = "/data/kluger/datasets/kitti/horizons" if args.set == 'kitti' else "/phys/ssd/kluger/tmp/HLW"
-        csv_base = "/home/kluger/tmp/kitti_split_%d" % args.split
+        csv_base = "/home/kluger/tmp/kitti_split_%d" % 5
         pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
 
     if args.downscale > 1 and args.set == 'kitti':
@@ -254,10 +135,7 @@ if __name__ == '__main__':
 
     pdf_file = None
 
-    if args.finetune:
-        target_directory = target_base + "/%s/%s_fine/d%d/%d/" % (args.set, args.net, args.downscale, args.seqlength)
-    else:
-        target_directory = target_base + "/%s/%s/d%d/%d/" % (args.set, args.net, args.downscale, args.seqlength)
+    target_directory = target_base + "/%s/%s/d%d/%d/" % (args.set, args.net, args.downscale, args.seqlength)
 
     date_and_time = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
 
@@ -286,16 +164,15 @@ if __name__ == '__main__':
     else:
         assert False
 
-    model = modelfun(args.finetune, regional_pool=None, use_fc=args.fc_layer, use_convlstm=args.conv_lstm,
-                     width=WIDTH, height=HEIGHT, trainable_lstm_init=args.trainable_lstm_init,
-                     conv_lstm_skip=args.conv_lstm_skip, confidence=False, second_head=False,
-                     relu_lstm=args.relulstm, second_head_fc=args.fchead2, lstm_bn=args.bn, lstm_skip=args.skip,
-                     lstm_bias=args.bias, lstm_peephole=args.peephole, ar=args.ar, kalman=False,
-                     lstm_state_reduction=args.lstm_state_reduction, bn=(not args.nobn), load=not(args.nomzload),
-                     h_skip=args.h_skip, lstm_skip2=args.skip2, lstm_depth=args.lstm_depth,
-                     lstm_simple_skip=args.simple_skip, lstm_mem=args.lstm_mem, layernorm=args.layernorm,
-                     lstm_leakyrelu=args.lstm_leakyrelu
-                     ).to(device)
+    model = modelfun(True, regional_pool=None, use_fc=False, use_convlstm=args.conv_lstm,
+                     width=WIDTH, height=HEIGHT, trainable_lstm_init=False,
+                     conv_lstm_skip=False, confidence=False, second_head=False,
+                     relu_lstm=False, second_head_fc=False, lstm_bn=False, lstm_skip=args.skip,
+                     lstm_bias=args.bias, lstm_peephole=False, ar=False, kalman=False,
+                     lstm_state_reduction=args.lstm_state_reduction, bn=True, load=not(args.nomzload),
+                     h_skip=False, lstm_skip2=False, lstm_depth=args.lstm_depth,
+                     lstm_simple_skip=args.simple_skip, lstm_mem=args.lstm_mem, layernorm=False,
+                     lstm_leakyrelu=False).to(device)
 
     if args.load is not None:
         load_from_path = args.load
@@ -329,8 +206,6 @@ if __name__ == '__main__':
     else:
         assert False
 
-    temp_criterion = TemporalMSELoss(from_start=args.temporal_loss_2)
-
     if args.optimizer == 'adam':
         optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=1e-4)
     elif args.optimizer == 'sgd':
@@ -361,16 +236,16 @@ if __name__ == '__main__':
 
     if args.set == 'kitti':
 
-        train_dataset = DS.KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, random_subsampling=args.random_subsampling,
+        train_dataset = DS.KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, random_subsampling=1.,
                                              csv_file=csv_base + "/train.csv", seq_length=args.seqlength,
-                                             im_height=HEIGHT, im_width=WIDTH, fill_up=(not args.no_fill_up),
+                                             im_height=HEIGHT, im_width=WIDTH, fill_up=True,
                                              scale=1./args.downscale, transform=tfs, get_split_data=False,
-                                             overlap=args.overlap, zero_start=args.temporal_loss_2)
+                                             overlap=0, zero_start=False)
         val_dataset = DS.KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False,
                                            csv_file=csv_base + "/val.csv", seq_length=args.seqlength_val,
                                            im_height=HEIGHT, im_width=WIDTH, fill_up=False,
                                            scale=1./args.downscale, transform=tfs_val, get_split_data=False,
-                                           zero_start=args.temporal_loss_2)
+                                           zero_start=False)
     elif args.set == 'hlw':
 
         train_dataset = DS.HLWDataset(root_dir=root_dir, transform=tfs, augmentation=True, set='train', scale=1./args.downscale)
@@ -400,9 +275,6 @@ if __name__ == '__main__':
             shutil.copyfile(filename, folder + '/model_best.ckpt')
 
     print(checkpoint_directory)
-
-    if args.temporal_loss_only:
-        assert False
 
     # Train the model
     total_step = len(train_loader)
@@ -463,13 +335,6 @@ if __name__ == '__main__':
 
                 loss += offset_loss + angle_loss * args.angle_loss_weight
 
-                if args.temporal_loss:
-                    temp_offset_loss = temp_criterion(output_offsets, offsets)
-                    temp_angle_loss = temp_criterion(output_angles, angles)
-                    loss += temp_offset_loss + temp_angle_loss * args.angle_loss_weight
-                    temp_offset_losses.append(temp_offset_loss)
-                    temp_angle_losses.append(temp_angle_loss)
-
                 if args.max_error_loss:
                     if args.max_error_loss_only:
                         loss = max_err_loss
@@ -510,13 +375,6 @@ if __name__ == '__main__':
 
                     num_iteration = int((epoch*total_step + i) * images_per_batch / 128.)
 
-                    if args.temporal_loss:
-                        temp_offset_losses_tensor = torch.stack(temp_offset_losses, dim=0).view(-1)
-                        temp_average_offset_loss = temp_offset_losses_tensor.mean().item()
-                        temp_angle_losses_tensor = torch.stack(temp_angle_losses, dim=0).view(-1)
-                        temp_average_angle_loss = temp_angle_losses_tensor.mean().item()
-
-                    # if args.max_error_loss:
                     max_err_losses_tensor = torch.stack(max_err_losses, dim=0).view(-1)
                     average_max_err_loss = max_err_losses_tensor.mean().item()
                     tensorboard_writer.add_scalar('train/max_err_loss', max_err_loss.item(), num_iteration)
@@ -533,12 +391,6 @@ if __name__ == '__main__':
                     tensorboard_writer.add_scalar('train/loss_avg', average_loss, num_iteration)
                     tensorboard_writer.add_scalar('train/offset_loss_avg', average_offset_loss, num_iteration)
                     tensorboard_writer.add_scalar('train/angle_loss_avg', average_angle_loss, num_iteration)
-                    if args.temporal_loss:
-                        tensorboard_writer.add_scalar('train/temp_offset_loss', temp_offset_loss.item(), num_iteration)
-                        tensorboard_writer.add_scalar('train/temp_angle_loss', temp_angle_loss.item(), num_iteration)
-                        tensorboard_writer.add_scalar('train/temp_offset_loss_avg', temp_average_offset_loss, num_iteration)
-                        tensorboard_writer.add_scalar('train/temp_angle_loss_avg', temp_average_angle_loss, num_iteration)
-
                     tensorboard_writer.add_scalar('learning_rate', scheduler.get_lr()[0], num_iteration)
 
                 tt0 = time.time()
@@ -577,14 +429,6 @@ if __name__ == '__main__':
                 angle_loss = criterion(output_angles, angles)
 
                 loss = offset_loss + angle_loss * args.angle_loss_weight
-                    
-                if args.temporal_loss:
-                    temp_offset_loss = temp_criterion(output_offsets, offsets)
-                    temp_angle_loss = temp_criterion(output_angles, angles)
-                    loss += temp_offset_loss + temp_angle_loss * args.angle_loss_weight
-                    temp_offset_losses.append(temp_offset_loss.item())
-                    temp_angle_losses.append(temp_angle_loss.item())
-
 
                 hl_true, hr_true = calc_hlr(offsets, angles)
                 hl_estm, hr_estm = calc_hlr(output_offsets, output_angles)
@@ -612,10 +456,6 @@ if __name__ == '__main__':
             average_loss = np.mean(losses)
             average_offset_loss = np.mean(offset_losses)
             average_angle_loss = np.mean(angle_losses)
-
-            if args.temporal_loss:
-                temp_average_offset_loss = np.mean(temp_offset_losses)
-                temp_average_angle_loss = np.mean(temp_angle_losses)
 
             num_iteration = int((epoch * total_step + idx) * images_per_batch / 128.)
 
@@ -681,10 +521,6 @@ if __name__ == '__main__':
             tensorboard_writer.add_scalar('val/loss_avg', average_loss, num_iteration)
             tensorboard_writer.add_scalar('val/offset_loss_avg', average_offset_loss, num_iteration)
             tensorboard_writer.add_scalar('val/angle_loss_avg', average_angle_loss, num_iteration)
-
-            if args.temporal_loss:
-                tensorboard_writer.add_scalar('val/temp_offset_loss_avg', temp_average_offset_loss, num_iteration)
-                tensorboard_writer.add_scalar('val/temp_angle_loss_avg', temp_average_angle_loss, num_iteration)
             tensorboard_writer.add_scalar('val/auc', auc, num_iteration)
 
         is_best = (average_loss < best_val_loss)
