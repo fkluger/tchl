@@ -11,7 +11,7 @@ random.seed(1)
 # Change this to the directory where you store KITTI data
 basedir = '/data/scene_understanding/KITTI/rawdata'
 
-target = '/home/kluger/tmp/kitti_split_3/'
+target = '/home/kluger/tmp/kitti_split_4/'
 
 dates = ['2011_09_26', '2011_09_28', '2011_09_29', '2011_09_30', '2011_10_03']
 
@@ -105,6 +105,14 @@ exclusion_list = [
     "2011_09_28_0222"
 ]
 
+exclusion_list = [
+    # calibration:
+    "2011_09_26_0119",
+    "2011_09_28_0225",
+    "2011_09_29_0108",
+    "2011_09_30_0072",
+    "2011_10_03_0058"]
+
 test_split = 0.15
 val_split = 0.15
 
@@ -129,8 +137,8 @@ for date in dates:
 
         drive = drive_dir.split("_")[-2]
 
-        if (date + "_" + drive) in exclusion_list:
-            continue
+        # if (date + "_" + drive) in exclusion_list:
+        #     continue
 
         drives.append(drive)
 
@@ -158,7 +166,7 @@ for date in dates:
 print("total size: ", total_size)
 print("num_drives: ", num_drives)
 
-# exit(0)
+exit(0)
 
 max_num_test = int(test_split * total_size)
 max_num_val = int(val_split * total_size)

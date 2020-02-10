@@ -6,11 +6,11 @@ from scipy.stats import norm
 import glob
 import os
 import csv
-from datasets.kitti import KittiRawDatasetPP, WIDTH, HEIGHT
+from datasets.hlw import HLWDataset, WIDTH,  HEIGHT
 from datasets.hlw import HLWDataset
 import torch
 
-class KittiAnalyser:
+class HLWAnalyser:
 
     def __init__(self, dataset):
 
@@ -72,18 +72,16 @@ class KittiAnalyser:
 
 if __name__ == '__main__':
 
+    root_dir = "/data/scene_understanding/HLW/"
 
-    root_dir = "/phys/ssd/kitti/horizons"
-    # root_dir = "/data/scene_understanding/HLW"
-    csv_base = "/home/kluger/tmp/kitti_split_5"
+    dataset = HLWDataset(root_dir, set="train_val_test", augmentation=False)
 
-    dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=None, augmentation=False,
-                                      csv_file=csv_base + "/all.csv", seq_length=1, fill_up=False)
+
     # dataset = HLWDataset(root_dir=root_dir, augmentation=False, set='train')
 
     print("go!")
 
-    anal = KittiAnalyser(dataset)
+    anal = HLWAnalyser(dataset)
 
     anal.analyse()
 
@@ -93,7 +91,7 @@ if __name__ == '__main__':
 
     # exit(0)
 
-    anal.write_csv('/home/kluger/tmp/kitti_analysis_5.csv')
+    anal.write_csv('/home/kluger/tmp/hlw_analysis.csv')
 
     fig = plt.figure()
     plt.hist2d(anal.all_angles, anal.all_offsets,

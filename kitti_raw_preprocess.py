@@ -13,7 +13,7 @@ from scipy import ndimage
 from skimage import transform
 
 # Change this to the directory where you store KITTI data
-basedir = '/phys/intern/kluger/tmp/kitti/rawdata'
+basedir = '/phys/ssd/kitti/rawdata'
 # basedir = '/data/scene_understanding/KITTI/rawdata'
 
 dates = [
@@ -27,8 +27,8 @@ dates = [
 WIDTH = 1250
 HEIGHT = 380
 
-scale = 0.5
-ema_alpha = 0.1
+scale = 1./2.
+ema_alpha = 0.0
 
 for date in dates:
 
@@ -48,7 +48,8 @@ for date in dates:
 
         dataset = pykitti.raw(basedir, date, drive)
 
-        target_dir = "/phys/intern/kluger/tmp/kitti/horizons_s%.3f_ema%.3f/%s/%s" % (scale, ema_alpha, date, drive)
+        target_dir = "/phys/ssd/kitti/horizons_s%.3f_ema%.3f/%s/%s" % (scale, ema_alpha, date, drive)
+        # target_dir = "/phys/intern/kluger/tmp/kitti/horizons_s%.3f_ema%.3f/%s/%s" % (scale, ema_alpha, date, drive)
         # target_dir = "/data/kluger/datasets/kitti/horizons_s%.3f_ema%.3f/%s/%s" % (scale, ema_alpha, date, drive)
         # target_dir = "/home/kluger/athene/kluger/tmp/kitti/horizons_s%.3f/%s/%s" % (scale, date, drive)
 
@@ -135,6 +136,8 @@ for date in dates:
                     'scale': scale, 'padding': (pad_w1, pad_w2, pad_h1, pad_h2), 'G': G_cam, 'K': K}
 
             pickle_file = target_dir + "/%06d.pkl" % idx
+
+            print(pickle_file)
 
             with open(pickle_file, 'wb') as f:
                 pickle.dump(data, f, -1)

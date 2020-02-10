@@ -206,7 +206,7 @@ class ConvLSTMCellReLUSkip(nn.Module):
 class ConvLSTMCellGeneral(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, kernel_size, bias, activation='tanh', peephole=False, skip=False,
-                 batch_norm=False, h_skip=False, skip2=False, simple_skip=False, layernorm=False):
+                 batch_norm=False):
         """
         Initialize ConvLSTM cell.
 
@@ -236,9 +236,6 @@ class ConvLSTMCellGeneral(nn.Module):
         self.bias = bias
         self.peephole = peephole
         self.skip = skip
-        self.simple_skip = simple_skip
-        self.skip2 = skip2
-        self.h_skip = h_skip
         self.batch_norm = batch_norm
 
         if activation == 'tanh':
@@ -247,9 +244,6 @@ class ConvLSTMCellGeneral(nn.Module):
         elif activation == 'relu':
             self.act_g = lambda x: x
             self.act_c = F.relu
-        elif activation == 'leakyrelu':
-            self.act_g = nn.LeakyReLU()
-            self.act_c = nn.LeakyReLU()
         else:
             assert False, 'unknown activation function'
 
@@ -280,24 +274,7 @@ class ConvLSTMCellGeneral(nn.Module):
             self.conv_g.bias.data.zero_()
             self.conv_o.bias.data.zero_()
 
-        if skip and simple_skip:
-            self.conv_y = nn.Conv2d(in_channels=self.hidden_dim,
-                                    out_channels=self.input_dim,
-                                    kernel_size=(1,1),
-                                    padding=(0,0),
-                                    bias=False)
-            self.output_dim = self.input_dim
-            # print('yes')
-
-        elif skip and skip2:
-            self.conv_y = nn.Conv2d(in_channels=self.hidden_dim,
-                                    out_channels=self.input_dim,
-                                    kernel_size=(1,1),
-                                    padding=(0,0),
-                                    bias=False)
-            self.output_dim = self.input_dim
-
-        elif skip:
+        if skip:
             self.conv_y = nn.Conv2d(in_channels=self.input_dim + 2*self.hidden_dim,
                                     out_channels=self.input_dim,
                                     kernel_size=(1,1),
@@ -306,17 +283,6 @@ class ConvLSTMCellGeneral(nn.Module):
             self.output_dim = self.input_dim
             # if batch_norm:
             self.bn = nn.BatchNorm2d(self.input_dim)
-        # else:
-        #
-        #     self.conv_y = nn.Conv2d(in_channels=self.hidden_dim,
-        #                             out_channels=self.input_dim,
-        #                             kernel_size=(1,1),
-        #                             padding=(0,0),
-        #                             bias=False)
-        else:
-            self.output_dim = self.hidden_dim
-
-        # print(self.conv_y.in_channels, self.conv_y.out_channels)
 
         if peephole:
             self.w_cf = nn.Parameter(torch.Tensor(self.hidden_dim, 1, 1))
@@ -326,10 +292,6 @@ class ConvLSTMCellGeneral(nn.Module):
             self.w_cf.data.uniform_(-stdv, stdv)
             self.w_ci.data.uniform_(-stdv, stdv)
             self.w_co.data.uniform_(-stdv, stdv)
-
-        self.layernorm = layernorm
-        if layernorm:
-            self.ln = nn.LayerNorm(self.hidden_dim)
 
 
     def forward(self, input_tensor, cur_state):
@@ -350,30 +312,8 @@ class ConvLSTMCellGeneral(nn.Module):
 
         c_next = f * c_cur + i * g
 
-        if self.layernorm:
-            c_next = c_next.transpose(1,3)
-            c_next = self.ln(c_next)
-            c_next = c_next.transpose(1,3)
-
-        if self.skip and self.simple_skip:
-            h_next = o * self.act_c(c_next)
-            y = self.conv_y(h_next) + input_tensor
-        elif self.skip2:
+        if self.skip:
             h_hat = o * c_next
-            if self.h_skip:
-                h_hat = h_hat + h_cur
-            h_next = self.act_c(h_hat)
-
-            # h_and_x_and_h_hat = torch.cat([input_tensor, h_cur, h_hat], dim=1)  # concatenate along channel axis
-            y_hat = self.conv_y(h_hat)
-            if self.batch_norm:
-                y_hat = self.bn(y_hat)
-            y = self.act_c(y_hat + input_tensor)
-
-        elif self.skip:
-            h_hat = o * c_next
-            if self.h_skip:
-                h_hat = h_hat + h_cur
             h_next = self.act_c(h_hat)
 
             h_and_x_and_h_hat = torch.cat([input_tensor, h_cur, h_hat], dim=1)  # concatenate along channel axis
@@ -381,17 +321,9 @@ class ConvLSTMCellGeneral(nn.Module):
             if self.batch_norm:
                 y_hat = self.bn(y_hat)
             y = self.act_c(y_hat + input_tensor)
-
         else:
             h_next = self.act_c(o * c_next)
-            # y = self.conv_y(h_next)
             y = h_next
-
-            # h_hat = o * c_next
-            # h_next = self.act_c(h_hat)
-            # # y = h_next
-            #
-            # y = self.act_c(self.conv_y(o * c_next))
 
         return h_next, c_next, y
 

@@ -1,7 +1,11 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
 from resnet.resnet_plus_lstm import resnet18rnn
-from datasets.hlw import HLWDataset, WIDTH,  HEIGHT
+from datasets.kitti import KittiRawDatasetPP, WIDTH,  HEIGHT
 from resnet.train import Config
+from utilities.tee import Tee
 import torch
+from torch import nn
 import datetime
 from torchvision import transforms
 import os
@@ -10,34 +14,115 @@ import time
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.animation as manimation
 import platform
+import logging
+logger = logging.getLogger('matplotlib.animation')
+logger.setLevel(logging.DEBUG)
 hostname = platform.node()
 import argparse
+import glob
+from mpl_toolkits.mplot3d import Axes3D
+import contextlib
+import math
 import sklearn.metrics
+from utilities.auc import *
+from datasets.hlw import HLWDataset, WIDTH,  HEIGHT
+
+np.seterr(all='raise')
+
+def calc_horizon_leftright(width, height):
+    wh = 0.5 * width#*1./height
+
+    def f(offset, angle):
+        term2 = wh * torch.tan(torch.clamp(angle, -math.pi/3., math.pi/3.)).cpu().detach().numpy().squeeze()
+        offset = offset.cpu().detach().numpy().squeeze()
+        angle = angle.cpu().detach().numpy().squeeze()
+        return height * offset + height * 0.5 + term2, height * offset + height * 0.5 - term2
+
+    return f
 
 parser = argparse.ArgumentParser(description='')
 parser.add_argument('--load', '-l', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
 parser.add_argument('--set', '-s', default='val', type=str, metavar='PATH', help='')
-parser.add_argument('--dev', '-d', default=0, type=int, metavar='PATH', help='')
-parser.add_argument('--batch', '-b', default=16, type=int, metavar='PATH', help='')
+parser.add_argument('--cpid', default=-1, type=int, metavar='N', help='')
+parser.add_argument('--batch', default=1, type=int, metavar='N', help='')
+parser.add_argument('--relulstm', dest='relulstm', action='store_true', help='')
+parser.add_argument('--skip', dest='skip', action='store_true', help='')
+parser.add_argument('--fc', dest='fc', action='store_true', help='')
+parser.add_argument('--lstm_state_reduction', default=1., type=float, metavar='S', help='random subsampling factor')
+parser.add_argument('--lstm_depth', default=1, type=int, metavar='S', help='random subsampling factor')
+parser.add_argument('--trainable_lstm_init', dest='trainable_lstm_init', action='store_true', help='')
+parser.add_argument('--cpu', dest='cpu', action='store_true', help='')
+parser.add_argument('--gpu', default='0', type=str, metavar='DS', help='dataset')
+parser.add_argument('--bias', dest='bias', action='store_true', help='')
+parser.add_argument('--convlstm', dest='convlstm', action='store_true', help='')
+parser.add_argument('--features', dest='features', action='store_true', help='')
+parser.add_argument('--meanmodel', dest='meanmodel', action='store_true', help='')
+parser.add_argument('--tee', dest='tee', action='store_true', help='')
+parser.add_argument('--simple_skip', dest='simple_skip', action='store_true', help='')
+parser.add_argument('--layernorm', dest='layernorm', action='store_true', help='')
+parser.add_argument('--lstm_leakyrelu', dest='lstm_leakyrelu', action='store_true', help='')
 
 args = parser.parse_args()
-
-print(args)
 
 checkpoint_path = args.load if not (args.load == '') else None
 set_type = args.set
 
+result_folder = os.path.join(checkpoint_path, "results/" + set_type + "/")
 
-os.environ["CUDA_VISIBLE_DEVICES"]="%d" % args.dev
-device = torch.device('cuda' if args.dev >= 0 else 'cpu', 0)
+if not os.path.exists(result_folder):
+    os.makedirs(result_folder)
 
-model = resnet18rnn(regional_pool=(3,3))
-# model = resnet18rnn()
-checkpoint = torch.load(os.path.join(checkpoint_path, "model_best.ckpt"), map_location=lambda storage, loc: storage)
-model.load_state_dict(checkpoint['state_dict'], strict=False)
-model.to(device)
-model.eval()
+os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+
+if args.cpu:
+    device = torch.device('cpu', 0)
+else:
+    device = torch.device('cuda', 0)
+# device = torch.device('cpu', 0)
+
+downscale = 2.
+
+
+if checkpoint_path is not None:
+
+    model = resnet18rnn(regional_pool=None, use_fc=args.fc, use_convlstm=args.convlstm, lstm_bias=args.bias,
+                        width=WIDTH, height=HEIGHT, trainable_lstm_init=args.trainable_lstm_init,
+                        conv_lstm_skip=False, confidence=False, second_head=False,
+                        relu_lstm=args.relulstm, second_head_fc=False, lstm_bn=False, lstm_skip=args.skip,
+                        lstm_peephole=False, lstm_mem=1, lstm_depth=args.lstm_depth,
+                        lstm_state_reduction=args.lstm_state_reduction, lstm_simple_skip=args.simple_skip,
+                        layernorm=args.layernorm, lstm_leakyrelu=args.lstm_leakyrelu).to(device)
+
+    if args.cpid == -1:
+        cp_path = os.path.join(checkpoint_path, "model_best.ckpt")
+    else:
+        cp_path_reg = os.path.join(checkpoint_path, "%03d_*.ckpt" % args.cpid)
+        cp_path = glob.glob(cp_path_reg)[0]
+    load_from_path = cp_path
+    print("load weights from ", load_from_path)
+    checkpoint = torch.load(load_from_path, map_location=lambda storage, loc: storage)
+
+    model.load_state_dict(checkpoint['state_dict'], strict=True)
+    model.eval()
+
+
+im_width = int(WIDTH/downscale)
+im_height = int(HEIGHT/downscale)
+
+calc_hlr = calc_horizon_leftright(im_width, im_height)
+
+all_errors = []
+all_angular_errors = []
+max_errors = []
+image_count = 0
+
+percs = [50, 80, 90, 95, 99]
+print("percentiles: ", percs)
+
+error_grads = []
+
 
 if 'daidalos' in hostname:
     target_base = "/tnt/data/kluger/checkpoints/horizon_sequences"
@@ -50,6 +135,7 @@ else:
     root_dir = "/data/scene_understanding/HLW/"
 
 pixel_mean = [0.469719773, 0.462005855, 0.454649294]
+# pixel_mean = [0.362365, 0.377767, 0.366744]
 
 tfs = transforms.Compose([
             transforms.ToTensor(),
@@ -57,7 +143,7 @@ tfs = transforms.Compose([
         ])
 
 
-dataset = HLWDataset(root_dir, set=args.set, augmentation=False, transform=tfs)
+dataset = HLWDataset(root_dir, set=args.set, augmentation=False, transform=tfs, scale=1./downscale)
 
 loader = torch.utils.data.DataLoader(dataset=dataset,
                                            batch_size=args.batch,
@@ -81,51 +167,32 @@ with torch.no_grad():
 
         output_offsets, output_angles = model(images)
 
+        # print(images.shape)
+        # exit(0)
+
         for bi in range(images.shape[0]):
             for si in range(images.shape[1]):
 
                 # image = images.numpy()[0,si,:,:,:].transpose((1,2,0))
-                width = WIDTH #image.shape[1]
-                height = HEIGHT #image.shape[0]
+                width = im_width#image.shape[1]
+                height = im_height#image.shape[0]
 
                 offset = offsets[bi, si].detach().numpy().squeeze()
                 angle = angles[bi, si].detach().numpy().squeeze()
 
-                all_offsets += [-offset.copy()]
-
-                offset += 0.5
-                offset *= height
-
-                true_mp = np.array([width/2., offset])
-                true_nv = np.array([np.sin(angle), np.cos(angle)])
-                true_hl = np.array([true_nv[0], true_nv[1], -np.dot(true_nv, true_mp)])
-                true_h1 = np.cross(true_hl, np.array([1, 0, 0]))
-                true_h2 = np.cross(true_hl, np.array([1, 0, -width]))
-                true_h1 /= true_h1[2]
-                true_h2 /= true_h2[2]
+                yl, yr = calc_hlr(offsets[bi, si], angles[bi, si])
 
                 if checkpoint_path is not None:
 
                     offset_estm = output_offsets[bi,si].detach().cpu().numpy().squeeze()
                     angle_estm = output_angles[bi,si].detach().cpu().numpy().squeeze()
 
-                    all_offsets_estm += [-offset_estm.copy()]
+                    yle, yre = calc_hlr(output_offsets[bi, si], output_angles[bi, si])
 
-                    offset_estm += 0.5
-                    offset_estm *= height
+                    err1 = np.abs((yl - yle) / height)
+                    err2 = np.abs((yr - yre) / height)
 
-                    estm_mp = np.array([width/2., offset_estm])
-                    estm_nv = np.array([np.sin(angle_estm), np.cos(angle_estm)])
-                    estm_hl = np.array([estm_nv[0], estm_nv[1], -np.dot(estm_nv, estm_mp)])
-                    estm_h1 = np.cross(estm_hl, np.array([1, 0, 0]))
-                    estm_h2 = np.cross(estm_hl, np.array([1, 0, -width]))
-                    estm_h1 /= estm_h1[2]
-                    estm_h2 /= estm_h2[2]
-
-                    err1 = np.minimum(np.linalg.norm(estm_h1 - true_h1), np.linalg.norm(estm_h1 - true_h2))
-                    err2 = np.minimum(np.linalg.norm(estm_h2 - true_h1), np.linalg.norm(estm_h2 - true_h2))
-
-                    err = np.maximum(err1,err2) / height
+                    err = np.maximum(err1, err2)
 
                     print("%.3f" % err)
 
