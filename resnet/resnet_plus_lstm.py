@@ -189,7 +189,6 @@ class ResNetPlusLSTM(resnet.ResNet):
         self.use_convlstm = use_convlstm
 
         if use_convlstm:
-
             self.head = ConvLSTMHead(input_dim=planes, hidden_dim=int(planes / lstm_state_reduction), skip=lstm_skip,
                                      bias=lstm_bias, depth=lstm_depth, simple_skip=lstm_simple_skip)
 

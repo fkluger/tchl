@@ -171,11 +171,14 @@ if __name__ == '__main__':
     else:
         assert False
 
-    model = modelfun(True, use_fc=False, use_convlstm=args.conv_lstm,
+    model = modelfun(True,
+                     use_fc=False,
+                     use_convlstm=args.conv_lstm,
                      lstm_skip=args.skip,
-                     lstm_state_reduction=args.lstm_state_reduction, load=not (args.nomzload),
                      lstm_depth=args.lstm_depth,
-                     lstm_simple_skip=args.simple_skip).to(device)
+                     lstm_state_reduction=args.lstm_state_reduction,
+                     lstm_simple_skip=args.simple_skip,
+                     load=not(args.nomzload)).to(device)
 
     if args.load is not None:
         load_from_path = args.load

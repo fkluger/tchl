@@ -1,7 +1,7 @@
-import os
 from resnet.resnet_plus_lstm import resnet18rnn
-from datasets.kitti import KittiRawDatasetPP, WIDTH,  HEIGHT
+from datasets.kitti import KittiRawDatasetPP
 from utilities.tee import Tee
+from kitti_horizon.kitti_horizon_torch import KITTIHorizon
 import torch
 from torchvision import transforms
 import os
@@ -15,7 +15,6 @@ logger = logging.getLogger('matplotlib.animation')
 logger.setLevel(logging.DEBUG)
 hostname = platform.node()
 import argparse
-import glob
 import contextlib
 from utilities.auc import *
 # from utilities.losses import calc_horizon_leftright
@@ -23,8 +22,10 @@ import math
 np.seterr(all='raise')
 
 parser = argparse.ArgumentParser(description='')
-parser.add_argument('--load', '-l', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
-parser.add_argument('--set', '-s', default='val', type=str, metavar='PATH', help='')
+parser.add_argument('--load', default=None, type=str, help='path to latest checkpoint')
+parser.add_argument('--results', default="./tmp/results", type=str, help='path to store results in')
+parser.add_argument('--dataset_path', default="/data/kluger/tmp/kitti_horizon_test", type=str, help='path to KITTI Horizon dataset')
+parser.add_argument('--set', default='val', type=str, help='dataset to evaluate on: val or test')
 parser.add_argument('--whole', dest='whole_sequence', action='store_true', help='')
 parser.add_argument('--video', dest='video', action='store_true', help='')
 parser.add_argument('--seqlength', default=10000, type=int, metavar='N', help='')
@@ -45,16 +46,10 @@ parser.add_argument('--image_height', default=190, type=int, help='image height'
 
 args = parser.parse_args()
 
-checkpoint_path = args.load if not (args.load == '') else None
 set_type = args.set
 
-if checkpoint_path is None:
-    result_folder = "/home/kluger/tmp/kitti_horizon_videos_4/" + set_type + "/"
-else:
-    result_folder = os.path.join(checkpoint_path, "results_test/" + set_type + "/")
-
-if not os.path.exists(result_folder):
-    os.makedirs(result_folder)
+if not os.path.exists(args.results):
+    os.makedirs(args.results)
 
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
@@ -65,8 +60,6 @@ else:
 
 seq_length = args.seqlength
 whole_sequence = args.whole_sequence
-
-downscale = 2.
 
 baseline_angle = 0.013490
 baseline_offset = -0.036219
@@ -82,19 +75,17 @@ def calc_horizon_leftright(width, height):
 
     return f
 
-if checkpoint_path is not None:
-    model = resnet18rnn(use_fc=args.fc, use_convlstm=args.convlstm, lstm_skip=args.skip, lstm_depth=args.lstm_depth,
-                        lstm_state_reduction=args.lstm_state_reduction, lstm_simple_skip=args.simple_skip).to(device)
 
-    if args.cpid == -1:
-        cp_path = os.path.join(checkpoint_path, "model_best.ckpt")
-    else:
-        cp_path_reg = os.path.join(checkpoint_path, "%03d_*.ckpt" % args.cpid)
-        cp_path = glob.glob(cp_path_reg)[0]
+if args.load is not None:
+    model = resnet18rnn(use_fc=args.fc,
+                        use_convlstm=args.convlstm,
+                        lstm_skip=args.skip,
+                        lstm_depth=args.lstm_depth,
+                        lstm_state_reduction=args.lstm_state_reduction,
+                        lstm_simple_skip=args.simple_skip).to(device)
 
-    load_from_path = cp_path
-    print("load weights from ", load_from_path)
-    checkpoint = torch.load(load_from_path, map_location=lambda storage, loc: storage)
+    print("load weights from ", args.load)
+    checkpoint = torch.load(args.load, map_location=lambda storage, loc: storage)
 
     model.load_state_dict(checkpoint['state_dict'], strict=True)
     model.eval()
@@ -139,6 +130,9 @@ test_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentat
                                  im_width=args.image_width, return_info=True, get_split_data=False,
                               csv_file=csv_base + "/test.csv", seq_length=seq_length, fill_up=False, transform=tfs_val)
 
+val_dataset = KITTIHorizon(root_dir=args.dataset_path, augmentation=False, csv_file=csv_base + "/val.csv",
+                                   seq_length=seq_length, fill_up=False, transform=tfs_val, return_info=True)
+
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                            batch_size=1,
                                            shuffle=False)
@@ -157,7 +151,7 @@ elif set_type == 'test':
 else:
     loader = train_loader
 
-result_folder = os.path.join(result_folder, "%d/" % args.seqlength)
+result_folder = os.path.join(args.results, "%d/" % args.seqlength)
 if not os.path.exists(result_folder):
     os.makedirs(result_folder)
 
@@ -228,7 +222,7 @@ with torch.no_grad():
 
         with writer.saving(fig, video_folder + "%05d.mp4" % (idx), 300) \
                                                                 if args.video else contextlib.suppress():
-            if whole_sequence and checkpoint_path is not None:
+            if whole_sequence and args.load is not None:
 
                 output_offsets, output_angles = model(images.to(device))
                 output_offsets = output_offsets.detach()
@@ -273,8 +267,8 @@ with torch.no_grad():
                 if args.video:
                     plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=None, hspace=None)
 
-                if checkpoint_path is not None or args.meanmodel:
-                    if checkpoint_path is not None:
+                if args.load is not None or args.meanmodel:
+                    if args.load is not None:
                         if not whole_sequence:
 
                             output_offsets, output_angles = model(images[:,si,:,:,:].unsqueeze(1).to(device))
@@ -354,7 +348,7 @@ with torch.no_grad():
 
                     l1.set_data([true_h1[0], true_h2[0]], [true_h1[1], true_h2[1]])
 
-                    if checkpoint_path is not None:
+                    if args.load is not None:
                         l2.set_data([estm_h1[0], estm_h2[0]], [estm_h1[1], estm_h2[1]])
                         # l2.set_data([0, yle], [im_width-1, yre])
 
@@ -375,7 +369,7 @@ with torch.no_grad():
         all_offsets_dif = np.array(all_offsets_dif)
         all_offsets_estm = np.array(all_offsets_estm)
         all_offsets_dif_estm = np.array(all_offsets_dif_estm)
-        if checkpoint_path is not None or args.meanmodel:
+        if args.load is not None or args.meanmodel:
             mean_err = np.mean(all_errors_per_sequence)
             stdd_err = np.std(all_errors_per_sequence)
             mean_abserr = np.mean(np.abs(all_errors_per_sequence))
@@ -393,12 +387,12 @@ with torch.no_grad():
 
         plt.plot(x, all_offsets, '-', c='#99C000')
 
-        if checkpoint_path is not None or args.meanmodel:
+        if args.load is not None or args.meanmodel:
             plt.plot(x, all_offsets_estm, '-', c='#0083CC')
 
         plt.ylim(-.4, .4)
 
-        if checkpoint_path is not None or args.meanmodel:
+        if args.load is not None or args.meanmodel:
             errors = np.abs(all_offsets-all_offsets_estm)
             err_mean = np.mean(errors).squeeze()
             err_stdd = np.std(errors).squeeze()
@@ -419,12 +413,12 @@ with torch.no_grad():
 
 
         plt.plot(x, all_angles, '-', c='#99C000')
-        if checkpoint_path is not None or args.meanmodel:
+        if args.load is not None or args.meanmodel:
             plt.plot(x, all_angles_estm, '-', c='#0083CC')
 
         plt.ylim(-.4, .4)
 
-        if checkpoint_path is not None or args.meanmodel:
+        if args.load is not None or args.meanmodel:
             errors = np.abs(all_angles-all_angles_estm)
             err_mean = np.mean(errors).squeeze()
             err_stdd = np.std(errors).squeeze()
