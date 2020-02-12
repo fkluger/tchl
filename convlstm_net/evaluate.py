@@ -1,5 +1,4 @@
 from resnet.resnet_plus_lstm import resnet18rnn
-from datasets.kitti import KittiRawDatasetPP
 from utilities.tee import Tee
 from kitti_horizon.kitti_horizon_torch import KITTIHorizon
 import torch
@@ -17,7 +16,6 @@ hostname = platform.node()
 import argparse
 import contextlib
 from utilities.auc import *
-# from utilities.losses import calc_horizon_leftright
 import math
 np.seterr(all='raise')
 
@@ -29,7 +27,6 @@ parser.add_argument('--set', default='val', type=str, help='dataset to evaluate 
 parser.add_argument('--whole', dest='whole_sequence', action='store_true', help='')
 parser.add_argument('--video', dest='video', action='store_true', help='')
 parser.add_argument('--seqlength', default=10000, type=int, metavar='N', help='')
-parser.add_argument('--cpid', default=-1, type=int, metavar='N', help='')
 parser.add_argument('--split', default=5, type=int, metavar='N', help='')
 parser.add_argument('--skip', dest='skip', action='store_true', help='')
 parser.add_argument('--fc', dest='fc', action='store_true', help='')
@@ -64,13 +61,15 @@ whole_sequence = args.whole_sequence
 baseline_angle = 0.013490
 baseline_offset = -0.036219
 
+csv_base = "./kitti_horizon/split/"
+
+
 def calc_horizon_leftright(width, height):
-    wh = 0.5 * width#*1./height
+    wh = 0.5 * width
 
     def f(offset, angle):
         term2 = wh * torch.tan(torch.clamp(angle, -math.pi/3., math.pi/3.)).cpu().detach().numpy().squeeze()
         offset = offset.cpu().detach().numpy().squeeze()
-        angle = angle.cpu().detach().numpy().squeeze()
         return height * offset + height * 0.5 + term2, height * offset + height * 0.5 - term2
 
     return f
@@ -89,27 +88,8 @@ if args.load is not None:
 
     model.load_state_dict(checkpoint['state_dict'], strict=True)
     model.eval()
-
-if 'daidalos' in hostname:
-    target_base = "/tnt/data/kluger/checkpoints/horizon_sequences"
-    root_dir = "/tnt/data/kluger/datasets/kitti/horizons"
-    csv_base = "/tnt/home/kluger/tmp/kitti_split_%d" % args.split
-    pdf_file = "/tnt/home/kluger/tmp/kitti_split/data_pdfs.pkl"
-elif 'athene' in hostname:
-    target_base = "/data/kluger/checkpoints/horizon_sequences"
-    root_dir = "/phys/intern/kluger/tmp/kitti/horizons"
-    csv_base = "/home/kluger/tmp/kitti_split_%d" % args.split
-    pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
-elif 'hekate' in hostname:
-    target_base = "/data/kluger/checkpoints/horizon_sequences"
-    root_dir = "/phys/ssd/kitti/horizons_s0.500_ema0.100"
-    csv_base = "/home/kluger/tmp/kitti_split_%d" % args.split
-    pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
 else:
-    target_base = "/data/kluger/checkpoints/horizon_sequences"
-    root_dir = "/data/kluger/datasets/kitti/horizons"
-    csv_base = "/home/kluger/tmp/kitti_split_%d" % args.split
-    pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
+    model = None
 
 pixel_mean = [0.362365, 0.377767, 0.366744]
 
@@ -120,23 +100,16 @@ tfs_val = transforms.Compose([
 
 calc_hlr = calc_horizon_leftright(args.image_width, args.image_height)
 
-train_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=args.image_height,
-                                  im_width=args.image_width, return_info=True, get_split_data=False,
-                                csv_file=csv_base + "/train.csv", seq_length=seq_length, fill_up=False, transform=tfs_val)
-val_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=args.image_height,
-                                im_width=args.image_width, return_info=True, get_split_data=False,
-                              csv_file=csv_base + "/val.csv", seq_length=seq_length, fill_up=False, transform=tfs_val)
-test_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=args.image_height,
-                                 im_width=args.image_width, return_info=True, get_split_data=False,
-                              csv_file=csv_base + "/test.csv", seq_length=seq_length, fill_up=False, transform=tfs_val)
-
 val_dataset = KITTIHorizon(root_dir=args.dataset_path, augmentation=False, csv_file=csv_base + "/val.csv",
+                                   seq_length=seq_length, fill_up=False, transform=tfs_val, return_info=True)
+test_dataset = KITTIHorizon(root_dir=args.dataset_path, augmentation=False, csv_file=csv_base + "/test.csv",
+                                   seq_length=seq_length, fill_up=False, transform=tfs_val, return_info=True)
+train_dataset = KITTIHorizon(root_dir=args.dataset_path, augmentation=False, csv_file=csv_base + "/train.csv",
                                    seq_length=seq_length, fill_up=False, transform=tfs_val, return_info=True)
 
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                            batch_size=1,
                                            shuffle=False)
-
 val_loader = torch.utils.data.DataLoader(dataset=val_dataset,
                                           batch_size=1,
                                           shuffle=False)
@@ -176,11 +149,7 @@ svg_folder = os.path.join(video_folder, "svg")
 if not os.path.exists(svg_folder):
     os.makedirs(svg_folder)
 
-cam = None
-
 all_errors = []
-all_angular_errors = []
-max_errors = []
 image_count = 0
 
 error_grads = []
@@ -199,20 +168,15 @@ with torch.no_grad():
         scale = sample['scale'].numpy()
         K = np.matrix(sample['K'][0])
 
-        print("idx ", idx, end="\t")
+        print("sequence ", idx, end="\t")
         all_offsets = []
-        all_offsets_dif = []
         all_offsets_estm = []
-        all_offsets_dif_estm = []
         all_angles = []
-        all_angles_dif = []
         all_angles_estm = []
-        all_angles_dif_estm = []
         feature_similarities = []
         feat = None
 
         all_errors_per_sequence = []
-        all_angular_errors_per_sequence = []
 
         if args.video:
             fig = plt.figure(figsize=(6.4, 3.0))
@@ -325,17 +289,6 @@ with torch.no_grad():
                     all_errors.append(err)
                     all_errors_per_sequence.append(err)
 
-                    try:
-                        angular_error = np.abs((np.arccos(np.clip(np.abs(np.dot(Ge.T, G)), 0, 1))*180/np.pi)[0,0])
-                    except:
-                        print(Ge)
-                        print(G)
-                        print(np.dot(Ge.T, G))
-                        exit(0)
-
-                    all_angular_errors.append(angular_error)
-                    all_angular_errors_per_sequence.append(angular_error)
-
                 if args.video:
                     image[:,:,0] += pixel_mean[0]
                     image[:,:,1] += pixel_mean[1]
@@ -350,7 +303,6 @@ with torch.no_grad():
 
                     if args.load is not None:
                         l2.set_data([estm_h1[0], estm_h2[0]], [estm_h1[1], estm_h2[1]])
-                        # l2.set_data([0, yle], [im_width-1, yre])
 
                         plt.suptitle("true: %.1f px, %.1f deg --- error: %.1f px, %.1f deg" %
                                      (offset, angle*180./np.pi, np.abs(offset-offset_estm),
@@ -366,25 +318,15 @@ with torch.no_grad():
 
         x = np.arange(0, len(all_offsets))
         all_offsets = np.array(all_offsets)
-        all_offsets_dif = np.array(all_offsets_dif)
         all_offsets_estm = np.array(all_offsets_estm)
-        all_offsets_dif_estm = np.array(all_offsets_dif_estm)
         if args.load is not None or args.meanmodel:
-            mean_err = np.mean(all_errors_per_sequence)
-            stdd_err = np.std(all_errors_per_sequence)
-            mean_abserr = np.mean(np.abs(all_errors_per_sequence))
-            stdd_abserr = np.std(np.abs(all_errors_per_sequence))
-            max_err = np.max(np.abs(all_errors_per_sequence))
-
-            max_errors += [max_err]
-
+            MSE = np.mean(np.square(all_errors_per_sequence))
             error_gradient = np.gradient(all_errors_per_sequence)
             abs_error_grad = np.sum(np.abs(error_gradient)) / len(all_errors_per_sequence)
-            print("abs_error_grad: %.9f / mean_abs_error: %.9f" % (abs_error_grad, mean_abserr))
+            print("A_TV: %.9f / MSE: %.9f" % (abs_error_grad, MSE))
             error_grads += [error_gradient]
 
-            plt.figure()
-
+        plt.figure()
         plt.plot(x, all_offsets, '-', c='#99C000')
 
         if args.load is not None or args.meanmodel:
@@ -396,9 +338,8 @@ with torch.no_grad():
             errors = np.abs(all_offsets-all_offsets_estm)
             err_mean = np.mean(errors).squeeze()
             err_stdd = np.std(errors).squeeze()
-            plt.suptitle("mean: %.4f - stdd: %.4f | mean, std, absmean, absstd: %.3f %.3f %.3f %.3f %.3f" %
-                         (err_mean, err_stdd, mean_err, stdd_err, mean_abserr, stdd_abserr, max_err), fontsize=8)
-
+            plt.suptitle("mean: %.4f - stdd: %.4f | MSE, A_TV: %.3f %.3f" %
+                         (err_mean, err_stdd, MSE, abs_error_grad), fontsize=8)
 
         plt.savefig(os.path.join(png_folder, "offsets_%03d.png" % idx), dpi=300)
         plt.savefig(os.path.join(svg_folder, "offsets_%03d.svg" % idx), dpi=300)
@@ -407,10 +348,7 @@ with torch.no_grad():
         plt.figure()
         x = np.arange(0, len(all_angles))
         all_angles = np.array(all_angles)
-        all_angles_dif = np.array(all_angles_dif)
         all_angles_estm = np.array(all_angles_estm)
-        all_angles_dif_estm = np.array(all_angles_dif_estm)
-
 
         plt.plot(x, all_angles, '-', c='#99C000')
         if args.load is not None or args.meanmodel:
@@ -422,8 +360,8 @@ with torch.no_grad():
             errors = np.abs(all_angles-all_angles_estm)
             err_mean = np.mean(errors).squeeze()
             err_stdd = np.std(errors).squeeze()
-            plt.suptitle("mean: %.4f - stdd: %.4f | mean, std, absmean, absstd: %.3f %.3f %.3f %.3f %.3f " %
-                         (err_mean, err_stdd, mean_err, stdd_err, mean_abserr, stdd_abserr, max_err), fontsize=8)
+            plt.suptitle("mean: %.4f - stdd: %.4f | MSE, A_TV: %.3f %.3f" %
+                         (err_mean, err_stdd, MSE, abs_error_grad), fontsize=8)
 
         plt.savefig(os.path.join(png_folder, "angles_%03d.png" % idx), dpi=300)
         plt.savefig(os.path.join(svg_folder, "angles_%03d.svg" % idx), dpi=300)
@@ -431,55 +369,24 @@ with torch.no_grad():
 
 print("%d images " % image_count)
 
-mean_err = np.mean(all_errors)
-stdd_err = np.std(all_errors)
-mean_abserr = np.mean(np.abs(all_errors))
-stdd_abserr = np.std(np.abs(all_errors))
-max_err = np.max(np.abs(all_errors))
-
 error_grads = np.concatenate(error_grads)
 abs_error_grad = np.sum(np.abs(error_grads)) / error_grads.shape[0]
 sq_error_grad = np.sum(np.square(np.abs(error_grads))) / error_grads.shape[0]
-print("abs_error_grad: %.9f" % abs_error_grad)
-print("sq_error_grad: %.9f" % sq_error_grad)
-
-print("total: mean, std, absmean, absstd, max: %.3f %.3f %.3f %.3f %.3f" %
-      (mean_err, stdd_err, mean_abserr, stdd_abserr, max_err))
 
 error_arr = np.abs(np.array(all_errors))
-MAE = np.mean(np.abs(error_arr))
 MSE = np.mean(np.square(error_arr))
-print("MSE: %.8f" % MSE)
-
 auc, plot_points = calc_auc(error_arr, cutoff=0.25)
-print("auc: ", auc)
-print("mean error: ", np.mean(error_arr))
+
+print("AUC: %.3f %%" % (auc*100))
+print("MSE: %.6f" % MSE)
+print("A_TV: %.6f" % abs_error_grad)
 
 plt.figure()
 plt.plot(plot_points[:,0], plot_points[:,1], 'b-')
 plt.xlim(0, 0.25)
 plt.ylim(0, 1.0)
-plt.text(0.175, 0.05, "AUC: %.8f" % auc, fontsize=12)
-plt.suptitle("mean, std, absmean, absstd: %.3f %.3f %.3f %.3f %.3f" %
-             (mean_err, stdd_err, mean_abserr, stdd_abserr, max_err), fontsize=10)
+plt.text(0.175, 0.05, "AUC: %.2f" % (auc*100), fontsize=12)
+plt.suptitle("AUC %.3f %%, MSE %.6f, A_TV %.6f" %
+             (auc*100, MSE, sq_error_grad), fontsize=10)
 plt.savefig(os.path.join(png_folder, "error_histogram.png"), dpi=300)
 plt.savefig(os.path.join(svg_folder, "error_histogram.svg"), dpi=300)
-
-print("angular errors:")
-error_arr = np.abs(np.array(all_angular_errors))
-auc, plot_points = calc_auc(error_arr, cutoff=5)
-print("auc: ", auc)
-print("mean error: ", np.mean(error_arr))
-
-average_max_error = np.mean(max_errors)
-print("average max error: %.8f" % average_max_error)
-
-plt.figure()
-plt.plot(plot_points[:,0], plot_points[:,1], 'b-')
-plt.xlim(0, 5)
-plt.ylim(0, 1.0)
-plt.text(0.175, 0.05, "AUC: %.8f" % auc, fontsize=12)
-plt.suptitle("mean, std, absmean, absstd: %.3f %.3f %.3f %.3f %.3f" %
-             (mean_err, stdd_err, mean_abserr, stdd_abserr, max_err), fontsize=10)
-plt.savefig(os.path.join(png_folder, "error_histogram_angular.png"), dpi=300)
-plt.savefig(os.path.join(svg_folder, "error_histogram_angular.svg"), dpi=300)

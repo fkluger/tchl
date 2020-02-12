@@ -1,7 +1,7 @@
 from torchvision.models import resnet
 import torch.nn.functional as F
 from torch.utils import model_zoo
-from resnet.convlstm import *
+from convlstm_net.convlstm import *
 
 
 class ConvLSTMHead(nn.Module):
@@ -222,38 +222,6 @@ class ResNetPlusLSTM(resnet.ResNet):
         result = self.head(y, get_features)
 
         return result
-
-    def forward_convs_single(self, x):
-        x = x.unsqueeze(0)
-
-        y = self.conv1(x)
-        y = self.bn1(y)
-        y = self.relu(y)
-        y = self.maxpool(y)
-
-        y = self.layer1(y)
-        y = self.layer2(y)
-        y = self.layer3(y)
-        y = self.layer4(y)
-
-        return y
-
-    def forward_fcs_single_offset(self, x):
-
-        B = x.shape[0]
-
-        y = self.avgpool(x)
-
-        x = y.reshape([B, 1, y.shape[1] * y.shape[2] * y.shape[3]])
-
-        init_c = torch.stack([self.lstm_init_c for _ in range(1)], dim=1)
-        init_h = torch.stack([self.lstm_init_h for _ in range(1)], dim=1)
-
-        x, _ = self.lstm(x, (init_h, init_c))
-
-        offset = self.fc_o(x)
-
-        return offset
 
 
 def resnet18rnn(finetune=True, load=True, bn=True, **kwargs):

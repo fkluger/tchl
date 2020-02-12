@@ -1,4 +1,4 @@
-from resnet.resnet_plus_lstm import resnet18rnn
+from convlstm_net.resnet_plus_lstm import resnet18rnn
 from kitti_horizon.kitti_horizon_torch import KITTIHorizon
 from datasets import hlw
 from utilities.tee import Tee
@@ -87,9 +87,9 @@ class Cutout(object):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--dataset_path', default="/data/kluger/tmp/kitti_horizon_test", type=str,
+    parser.add_argument('--dataset_path', default="/data/kluger/tmp/kitti_horizon_test/", type=str,
                         help='path to preprocessed dataset')
-    parser.add_argument('--checkpoint_path', default="/data/kluger/checkpoints/horizon_sequences_test", type=str,
+    parser.add_argument('--checkpoint_path', default="./tmp/training_results/", type=str,
                         help='folder where checkpoints will be stored')
     parser.add_argument('--set', default='kitti', type=str, help='dataset: kitti or hlw')
     parser.add_argument('--image_width', default=625, type=int, help='image width')
@@ -154,13 +154,13 @@ if __name__ == '__main__':
 
     date_and_time = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
 
-    checkpoint_directory = target_directory + "b%d_" % args.batch + "_" + date_and_time
+    checkpoint_directory = target_directory + "b%d_" % args.batch + date_and_time
 
     if not os.path.exists(checkpoint_directory):
         os.makedirs(checkpoint_directory)
 
     log_file = os.path.join(checkpoint_directory, "output.log")
-    log = Tee(os.path.join(checkpoint_directory, log_file), "w", file_only=False)
+    log = Tee(log_file, "w", file_only=False)
 
     print("hostname: ", hostname)
 
