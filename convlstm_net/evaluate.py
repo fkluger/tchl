@@ -1,4 +1,4 @@
-from resnet.resnet_plus_lstm import resnet18rnn
+from convlstm_net.resnet_plus_lstm import resnet18rnn
 from utilities.tee import Tee
 from kitti_horizon.kitti_horizon_torch import KITTIHorizon
 import torch
@@ -85,6 +85,9 @@ if args.load is not None:
 
     print("load weights from ", args.load)
     checkpoint = torch.load(args.load, map_location=lambda storage, loc: storage)
+
+    for key in checkpoint['state_dict']:
+        print(key)
 
     model.load_state_dict(checkpoint['state_dict'], strict=True)
     model.eval()
