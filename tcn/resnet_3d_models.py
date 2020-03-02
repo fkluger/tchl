@@ -4,116 +4,12 @@ import torch
 import torch.nn.functional as F
 from torch.utils import model_zoo
 import math
-from resnet.convlstm import *
+
 
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
-
-
-class ConvLSTMHead(nn.Module):
-
-    def __init__(self, input_dim, hidden_dim, train_init, lstm_mem, relu_lstm, skip, bias, peephole, depth,
-                 h_skip):
-        super(ConvLSTMHead, self).__init__()
-
-        self.lstm_mem = lstm_mem
-
-        self.conv_lstm = ConvLSTMCellGeneral(input_dim=input_dim,
-                                             hidden_dim=hidden_dim,
-                                             kernel_size=(3, 3),
-                                             bias=bias,
-                                             activation='relu' if relu_lstm else 'tanh',
-                                             peephole=peephole,
-                                             skip=skip, h_skip=h_skip)
-
-        self.conv_lstm_list = [self.conv_lstm]
-
-        if depth > 1:
-            conv_lstm = ConvLSTMCellGeneral(input_dim=input_dim,
-                                            hidden_dim=hidden_dim,
-                                            kernel_size=(3, 3),
-                                            bias=bias,
-                                            activation='relu' if relu_lstm else 'tanh',
-                                            peephole=peephole,
-                                            skip=skip, h_skip=h_skip)
-
-            self.conv_lstm_list += [conv_lstm]
-
-        self.fc = nn.Linear(self.conv_lstm.output_dim, input_dim)
-        self.fc_o = nn.Linear(input_dim, 1)
-        self.fc_a = nn.Linear(input_dim, 1)
-
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-
-        if train_init:
-            self.lstm_init_h = nn.Parameter(torch.normal(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
-                                                         0.01 * torch.ones(self.conv_lstm.hidden_dim).type(
-                                                             torch.Tensor)), requires_grad=True)
-            self.lstm_init_c = nn.Parameter(torch.normal(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
-                                                         0.01 * torch.ones(self.conv_lstm.hidden_dim).type(
-                                                             torch.Tensor)), requires_grad=True)
-        else:
-            self.lstm_init_h = nn.Parameter(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
-                                            requires_grad=False)
-            self.lstm_init_c = nn.Parameter(torch.zeros(self.conv_lstm.hidden_dim).type(torch.Tensor),
-                                            requires_grad=False)
-
-
-    def forward(self, x, get_features=False):
-
-        B = x.shape[0]
-        S = x.shape[1]
-        C = x.shape[2]
-        H = x.shape[3]
-        W = x.shape[4]
-
-        h_state = self.lstm_init_h.view(1, -1, 1, 1).expand(B, -1, H, W)
-        c_state = self.lstm_init_c.view(1, -1, 1, 1).expand(B, -1, H, W)
-
-        y_outputs = []
-        for d, conv_lstm in enumerate(self.conv_lstm_list):
-            h_states = []
-            for s in range(S):
-
-                if self.lstm_mem > 0 and s % self.lstm_mem == 0:
-                    c_state = torch.stack([torch.stack(
-                        [torch.stack([self.lstm_init_c for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in
-                        range(B)],
-                        dim=0)
-                    h_state = torch.stack([torch.stack(
-                        [torch.stack([self.lstm_init_h for _ in range(H)], dim=-1) for _ in range(W)], dim=-1) for _ in
-                        range(B)],
-                        dim=0)
-
-                if d == 0:
-                    h_state, c_state, y_step = conv_lstm(x[:, s, :, :, :], (h_state, c_state))
-                else:
-                    h_state, c_state, y_step = conv_lstm(y_outputs[-1][s], (h_state, c_state))
-                h_states.append(y_step)
-
-            y_outputs.append(h_states.copy())
-
-        y = torch.stack(y_outputs[-1], dim=1)
-        C = y.shape[2]
-        y = y.reshape([B * S, C, H, W])
-
-        y = self.avgpool(y)
-
-        x = y.reshape([B, S, y.shape[1] * y.shape[2] * y.shape[3]])
-
-        x = self.fc(x)
-        x = nn.functional.relu(x)
-
-        offset = self.fc_o(x)
-        angle = self.fc_a(x)
-
-        if get_features:
-            return offset, angle, x
-        else:
-            return offset, angle
-
 
 
 class BasicBlock(R.BasicBlock):
@@ -217,7 +113,6 @@ class BasicBlock_3_5(nn.Module):
         out = self.relu(out)
 
         return out
-
 
 
 class BasicBlock_5_5(nn.Module):
@@ -371,6 +266,7 @@ class BasicBlock_1_3(nn.Module):
 
         return out
 
+
 class BasicBlock_1_1(nn.Module):
     expansion = 1
     fov_increase = 0
@@ -407,6 +303,7 @@ class BasicBlock_1_1(nn.Module):
         out = self.relu(out)
 
         return out
+
 
 class BasicBlock_3_3dil(nn.Module):
     expansion = 1
@@ -701,7 +598,6 @@ class ResNetAR(nn.Module):
         angle = self.fc_a(x)
 
         return offset, angle
-
 
 
 class ResNet_3_2d_1_3d(nn.Module):
@@ -1070,6 +966,7 @@ def resnet18_3d_3_3(load=True, **kwargs):
     model = ResNet3d([BasicBlock_3_3, BasicBlock_3_3, BasicBlock_3_3, BasicBlock_3_3], [2, 2, 2, 2], **kwargs)
     return model
 
+
 def resnet18_2d3d_3_3dil(load=True, **kwargs):
     model = ResNet3d([BasicBlock, BasicBlock, BasicBlock_3_3dil, BasicBlock_3_3dil], [2, 2, 2, 2], **kwargs)
     if load:
@@ -1093,6 +990,7 @@ def resnet18_2d3d_3_3dil(load=True, **kwargs):
         model.load_state_dict(model_dict)
 
     return model
+
 
 def resnet18_2d(load=True, **kwargs):
     model = ResNet3d([BasicBlock, BasicBlock, BasicBlock, BasicBlock], [2, 2, 2, 2], **kwargs)
@@ -1132,15 +1030,3 @@ def resnet18_2d(load=True, **kwargs):
 def resnet18_3d_1_3dil(**kwargs):
     model = ResNet3d(BasicBlock_1_3dil, [2, 2, 2, 2], **kwargs)
     return model
-#
-# def resnet34rnn(finetune=False, regional_pool=None, load=True, bn=True, **kwargs):
-#     model = ResNetPlusLSTM(resnet.BasicBlock if bn else BasicBlockNoBN, [3, 4, 6, 3],
-#                            finetune=finetune, regional_pool=regional_pool, **kwargs)
-#     if load:
-#         model.load_state_dict(model_zoo.load_url(resnet.model_urls['resnet18']), strict=False)
-#     return model
-#
-# def resnet50rnn(finetune=False, regional_pool=None, **kwargs):
-#     model = ResNetPlusLSTM(resnet.Bottleneck, [3, 4, 6, 3], finetune=finetune, regional_pool=regional_pool, **kwargs)
-#     model.load_state_dict(model_zoo.load_url(resnet.model_urls['resnet50']), strict=False)
-#     return model
