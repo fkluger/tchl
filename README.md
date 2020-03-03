@@ -22,6 +22,7 @@ Set up the Python environment using [Anaconda](https://www.anaconda.com/):
 ```
 conda env create -f environment.yml
 source activate tchl
+export PYTHONPATH=./
 ```
 
 [Download](https://cloud.tnt.uni-hannover.de/index.php/s/YPWqXyD7Hm5c71u) the preprocessed KITTI Horizon data or [generate it yourself](https://github.com/fkluger/kitti_horizon).
