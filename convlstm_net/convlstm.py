@@ -99,7 +99,7 @@ class ConvLSTMCellGeneral(nn.Module):
     def forward(self, input_tensor, cur_state):
         h_cur, c_cur = cur_state
 
-        h_and_x = torch.cat([input_tensor, h_cur], dim=1)  # concatenate along channel axis
+        h_and_x = torch.cat([input_tensor, h_cur], dim=1)
 
         i = torch.sigmoid(self.conv_i(h_and_x))
         f = torch.sigmoid(self.conv_f(h_and_x))
@@ -117,7 +117,7 @@ class ConvLSTMCellGeneral(nn.Module):
             h_hat = o * c_next
             h_next = self.act_c(h_hat)
 
-            h_and_x_and_h_hat = torch.cat([input_tensor, h_cur, h_hat], dim=1)  # concatenate along channel axis
+            h_and_x_and_h_hat = torch.cat([input_tensor, h_cur, h_hat], dim=1)
             y_hat = self.conv_y(h_and_x_and_h_hat)
             if self.batch_norm:
                 y_hat = self.bn(y_hat)

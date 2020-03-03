@@ -1,6 +1,6 @@
 from convlstm_net.resnet_plus_lstm import resnet18rnn
 from kitti_horizon.kitti_horizon_torch import KITTIHorizon
-from datasets import hlw
+from hlw.hlw import HLWDataset
 from utilities.tee import Tee
 from torch import nn
 from torchvision import transforms
@@ -87,7 +87,7 @@ class Cutout(object):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--dataset_path', default="/data/kluger/tmp/kitti_horizon_test/", type=str,
+    parser.add_argument('--dataset_path', default="/data/kluger/tmp/kitti_horizon/", type=str,
                         help='path to preprocessed dataset')
     parser.add_argument('--checkpoint_path', default="./tmp/training_results/", type=str,
                         help='folder where checkpoints will be stored')
@@ -250,10 +250,9 @@ if __name__ == '__main__':
                                    seq_length=args.seqlength_val, fill_up=False, transform=tfs_val)
 
     elif args.set == 'hlw':
-        assert False, "not implemented"
-        train_dataset = DS.HLWDataset(root_dir=root_dir, transform=tfs, augmentation=True, set='train',
+        train_dataset = HLWDataset(root_dir=root_dir, transform=tfs, augmentation=True, set='train',
                                       scale=1. / args.downscale)
-        val_dataset = DS.HLWDataset(root_dir=root_dir, augmentation=False, transform=tfs_val, set='val',
+        val_dataset = HLWDataset(root_dir=root_dir, augmentation=False, transform=tfs_val, set='val',
                                     scale=1. / args.downscale)
     else:
         assert False

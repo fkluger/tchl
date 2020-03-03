@@ -1,9 +1,7 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
-from resnet import resnet_plus_lstm
-from resnet_3d import resnet_3d_models
-from datasets.kitti import KittiRawDatasetPP, WIDTH,  HEIGHT
-from resnet.train import Config
+from tcn import resnet_3d_models
+from kitti_horizon.kitti_horizon_torch import KITTIHorizon
 from utilities.tee import Tee
 import torch
 from torch import nn
@@ -23,54 +21,36 @@ logger.setLevel(logging.DEBUG)
 hostname = platform.node()
 import argparse
 import glob
-from mpl_toolkits.mplot3d import Axes3D
 import contextlib
 import math
 import sklearn.metrics
 from utilities.auc import *
-
-from utilities.gradcam import GradCam, GuidedBackprop
-# from utilities.gradcam_misc_functions import
+from utilities.losses import calc_horizon_leftright
 
 np.seterr(all='raise')
 
-def calc_horizon_leftright(width, height):
-    wh = 0.5 * width#*1./height
-
-    def f(offset, angle):
-        term2 = wh * torch.tan(torch.clamp(angle, -math.pi/3., math.pi/3.)).cpu().detach().numpy().squeeze()
-        offset = offset.cpu().detach().numpy().squeeze()
-        angle = angle.cpu().detach().numpy().squeeze()
-        return height * offset + height * 0.5 + term2, height * offset + height * 0.5 - term2
-
-    return f
-
 parser = argparse.ArgumentParser(description='')
-parser.add_argument('--load', '-l', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
-parser.add_argument('--set', '-s', default='val', type=str, metavar='PATH', help='')
-parser.add_argument('--whole', dest='whole_sequence', action='store_true', help='')
-parser.add_argument('--video', dest='video', action='store_true', help='')
-parser.add_argument('--seqlength', default=10000, type=int, metavar='N', help='')
-parser.add_argument('--cpid', default=-1, type=int, metavar='N', help='')
-parser.add_argument('--disable_mean_subtraction', dest='disable_mean_subtraction', action='store_true', help='visualize with gradcam')
-parser.add_argument('--cpu', dest='cpu', action='store_true', help='')
-parser.add_argument('--gpu', default='0', type=str, metavar='DS', help='dataset')
-parser.add_argument('--net', default='resnet18_3_2d_1_3d', type=str, metavar='DS', help='dataset')
-parser.add_argument('--bias', dest='bias', action='store_true', help='')
-parser.add_argument('--features', dest='features', action='store_true', help='')
-parser.add_argument('--tee', dest='tee', action='store_true', help='')
-parser.add_argument('--lb1', default="BB13", type=str, metavar='DS', help='dataset')
-parser.add_argument('--lb2', default="BB13", type=str, metavar='DS', help='dataset')
 
+parser.add_argument('--load', default=None, type=str, help='path to NN model weights')
+parser.add_argument('--results', default="./tmp/results", type=str, help='path to store results in')
+parser.add_argument('--dataset_path', default="/data/kluger/tmp/kitti_horizon", type=str, help='path to KITTI Horizon dataset')
+parser.add_argument('--set', default='val', type=str, help='dataset to evaluate on: val or test')
+parser.add_argument('--whole', dest='whole_sequence', action='store_true', help='process whole sequence at once')
+parser.add_argument('--video', dest='video', action='store_true', help='generate video output (possibly very slow!)')
+parser.add_argument('--seqlength', default=10000, type=int, help='maximum frames per sequence')
+parser.add_argument('--cpu', dest='cpu', action='store_true', help='use CPU only')
+parser.add_argument('--gpu', default='0', type=str, help='which GPU to use')
+parser.add_argument('--tee', dest='tee', action='store_true', help='save console output to logfile')
+parser.add_argument('--image_width', default=625, type=int, help='image width')
+parser.add_argument('--image_height', default=190, type=int, help='image height')
+parser.add_argument('--lb1', default="BB13", type=str, help='')
+parser.add_argument('--lb2', default="BB13", type=str, help='')
 args = parser.parse_args()
 
 checkpoint_path = args.load if not (args.load == '') else None
 set_type = args.set
 
-if checkpoint_path is None:
-    result_folder = "/home/kluger/tmp/kitti_horizon_videos_4/" + set_type + "/"
-else:
-    result_folder = os.path.join(checkpoint_path, "results/" + set_type + "/")
+result_folder = args.results
 
 if not os.path.exists(result_folder):
     os.makedirs(result_folder)
@@ -81,123 +61,55 @@ if args.cpu:
     device = torch.device('cpu', 0)
 else:
     device = torch.device('cuda', 0)
-# device = torch.device('cpu', 0)
 
 seq_length = args.seqlength
 whole_sequence = args.whole_sequence
 
-downscale = 2.
-
 if checkpoint_path is not None:
 
-    if args.cpid == -1:
-        cp_path = os.path.join(checkpoint_path, "model_best.ckpt")
-    else:
-        cp_path_reg = os.path.join(checkpoint_path, "%03d_*.ckpt" % args.cpid)
-        cp_path = glob.glob(cp_path_reg)[0]
+    cp_path = checkpoint_path
 
     load_from_path = cp_path
     print("load weights from ", load_from_path)
     checkpoint = torch.load(load_from_path, map_location=lambda storage, loc: storage)
     model_args = checkpoint['args']
 
-    if model_args.net == 'res18':
-        modelfun = resnet_3d_models.resnet18_3d_3_3
-    elif model_args.net == 'resnet18_2d3d_3_3dil':
-        modelfun = resnet_3d_models.resnet18_2d3d_3_3dil
-    elif model_args.net == 'resnet18_2d':
-        modelfun = resnet_3d_models.resnet18_2d
-    elif model_args.net == 'resnet18':
-        modelfun = resnet_3d_models.resnet18
-    elif model_args.net == 'resnet18_3_2d_1_3d':
-        modelfun = resnet_3d_models.resnet18_3_2d_1_3d
-    elif model_args.net == 'resnet18_3_2d_1_3d_lstm':
-        modelfun = resnet_3d_models.resnet18_3_2d_1_3d_lstm
-    elif model_args.net == 'resnet18_2_2d_2_3d':
-        modelfun = resnet_3d_models.resnet18_2_2d_2_3d
-    elif model_args.net == 'resnet18rnn':
-        modelfun = resnet_plus_lstm.resnet18rnn
-    else:
-        assert False
-
+    modelfun = resnet_3d_models.resnet18_2_2d_2_3d
     model, blocks = modelfun(order='BDCHW', blocknames=[model_args.lb1, model_args.lb2])
     model = model.to(device)
 
     fov_increase = model.fov_increase
-    overlap = 2*fov_increase
-
-
     model.load_state_dict(checkpoint['state_dict'], strict=True)
     model.eval()
 
-if 'daidalos' in hostname:
-    target_base = "/tnt/data/kluger/checkpoints/horizon_sequences"
-    root_dir = "/tnt/data/kluger/datasets/kitti/horizons"
-    csv_base = "/tnt/home/kluger/tmp/kitti_split_5"
-    pdf_file = "/tnt/home/kluger/tmp/kitti_split/data_pdfs.pkl"
-elif 'athene' in hostname:
-    target_base = "/data/kluger/checkpoints/horizon_sequences"
-    root_dir = "/phys/intern/kluger/tmp/kitti/horizons"
-    csv_base = "/home/kluger/tmp/kitti_split_5"
-    pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
-elif 'hekate' in hostname:
-    target_base = "/data/kluger/checkpoints/horizon_sequences"
-    root_dir = "/phys/ssd/kitti/horizons"
-    csv_base = "/home/kluger/tmp/kitti_split_5"
-    pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
-else:
-    target_base = "/data/kluger/checkpoints/horizon_sequences"
-    root_dir = "/data/kluger/datasets/kitti/horizons"
-    csv_base = "/home/kluger/tmp/kitti_split_5"
-    pdf_file = "/home/kluger/tmp/kitti_split/data_pdfs.pkl"
-
-
-if downscale > 1:
-    root_dir += "_s%.3f" % (1./downscale)
-
-
-root_dir += "_ema%.3f" % 0.1
-
 
 pixel_mean = [0.362365, 0.377767, 0.366744]
-if args.disable_mean_subtraction:
-    pixel_mean = [0., 0., 0.]
-
-# print("pixel_mean: ", pixel_mean)
 
 tfs_val = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=pixel_mean, std=[1., 1., 1.]),
         ])
 
-im_width = int(WIDTH/downscale)
-im_height = int(HEIGHT/downscale)
+im_width = args.image_width
+im_height = args.image_height
 
 calc_hlr = calc_horizon_leftright(im_width, im_height)
 
-train_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height,
-                                  im_width=im_width, return_info=True, get_split_data=False,
-                                  csv_file=csv_base + "/train.csv", seq_length=seq_length, fill_up=False,
-                                  transform=tfs_val, pre_padding=overlap, overlap=overlap)
-val_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height,
-                                im_width=im_width, return_info=True, get_split_data=False,
-                                csv_file=csv_base + "/val.csv", seq_length=seq_length, fill_up=False,
-                                transform=tfs_val, pre_padding=overlap, overlap=overlap)
-test_dataset = KittiRawDatasetPP(root_dir=root_dir, pdf_file=pdf_file, augmentation=False, im_height=im_height,
-                                 im_width=im_width, return_info=True, get_split_data=False,
-                                 csv_file=csv_base + "/test.csv", seq_length=seq_length, fill_up=False,
-                                 transform=tfs_val, pre_padding=overlap, overlap=overlap)
+csv_base = "./kitti_horizon/split/"
 
-train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
-                                           batch_size=1,
-                                           shuffle=False)
+val_dataset = KITTIHorizon(root_dir=args.dataset_path, augmentation=False, csv_file=csv_base + "/val.csv",
+                           seq_length=seq_length, fill_up=False, transform=tfs_val, return_info=True,
+                           padding=fov_increase)
+test_dataset = KITTIHorizon(root_dir=args.dataset_path, augmentation=False, csv_file=csv_base + "/test.csv",
+                            seq_length=seq_length, fill_up=False, transform=tfs_val, return_info=True,
+                            padding=fov_increase)
+train_dataset = KITTIHorizon(root_dir=args.dataset_path, augmentation=False, csv_file=csv_base + "/train.csv",
+                             seq_length=seq_length, fill_up=False, transform=tfs_val, return_info=True,
+                             padding=fov_increase)
 
-val_loader = torch.utils.data.DataLoader(dataset=val_dataset,
-                                          batch_size=1,
-                                          shuffle=False)
-test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
-                                          batch_size=1,
-                                          shuffle=False)
+train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=1, shuffle=False)
+val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1, shuffle=False)
+test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=1, shuffle=False)
 
 if set_type == 'val':
     loader = val_loader
@@ -208,12 +120,10 @@ else:
 
 result_folder = os.path.join(result_folder, "%d/" % args.seqlength)
 
-
 FFMpegWriter = manimation.writers['ffmpeg']
 metadata = dict(title='Movie Test', artist='Matplotlib',
                 comment='Movie support!', codec='vp9')
 writer = FFMpegWriter(fps=10, metadata=metadata, codec='libx264', extra_args=['-intra'])
-
 
 video_folder = result_folder
 if not os.path.exists(video_folder):
@@ -225,8 +135,6 @@ if not os.path.exists(png_folder):
 svg_folder = os.path.join(video_folder, "svg")
 if not os.path.exists(svg_folder):
     os.makedirs(svg_folder)
-
-cam = None
 
 if args.tee:
     log_file = os.path.join(result_folder, "log")
@@ -255,16 +163,12 @@ with torch.no_grad():
         padding = sample['padding']
         scale = sample['scale'].numpy()
         K = np.matrix(sample['K'][0])
-        # K = sample['K']
-        # Gs = sample['G']
 
         print("idx ", idx, end="\t")
         all_offsets = []
         all_offsets_estm = []
         all_angles = []
         all_angles_estm = []
-        feature_similarities = []
-        feat = None
 
         all_errors_per_sequence = []
         all_angular_errors_per_sequence = []
@@ -276,18 +180,12 @@ with torch.no_grad():
             l2, = plt.plot([], [], '--', lw=2, c='#0083CC')
 
 
-        with writer.saving(fig, video_folder + "%s%05d.mp4" % (("guided-" if args.guided_gradcam else "") +
-                                                               ("gradcam_" if args.use_gradcam else ""), idx), 300) \
+        with writer.saving(fig, video_folder + "%s%05d.mp4" % ("", idx), 300) \
                                                                 if args.video else contextlib.suppress():
             if whole_sequence and checkpoint_path is not None:
 
-                if args.features:
-                    output_offsets, output_angles, feat = model(images.to(device), get_features=True)
-                else:
-                    output_offsets, output_angles = model(images.to(device))
+                output_offsets, output_angles = model(images.to(device))
 
-                # print(output_offsets[0,:8])
-                # exit(0)
             for si in range(images.shape[1]-2*fov_increase):
 
                 image_count += 1
@@ -295,19 +193,9 @@ with torch.no_grad():
                 image = images.numpy()[0,si+2*fov_increase,:,:,:].transpose((1,2,0))
                 width = image.shape[1]
                 height = image.shape[0]
-                # print(image.shape)
-                # print(image[20,100:108,0])
-                # exit(0)
 
                 offset = offsets[0, si].detach().numpy().squeeze()
                 angle = angles[0, si].detach().numpy().squeeze()
-
-                if args.features:
-                    if si > 0 and feat is not None:
-                        feat1 = feat[0, si-1, :].cpu().detach().numpy().squeeze()
-                        feat2 = feat[0, si, :].cpu().detach().numpy().squeeze()
-                        similarity = np.dot(feat1, feat2) / (np.linalg.norm(feat1)*np.linalg.norm(feat2))
-                        feature_similarities += [similarity]
 
                 yl, yr = calc_hlr(offsets[0, si], angles[0, si])
 
@@ -332,7 +220,6 @@ with torch.no_grad():
                 Gt /= np.linalg.norm(Gt)
 
                 plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=None, hspace=None)
-                    # fig.set_dpi(plt.rcParams["figure.dpi"])
 
                 if checkpoint_path is not None:
                     if not whole_sequence:
@@ -371,13 +258,8 @@ with torch.no_grad():
                     G = np.matrix(Gs[si]).T
                     G /= np.linalg.norm(G)
 
-                    err1 = (yl-yle) / height
-                    err2 = (yr-yre) / height
-
-                    # err1 = np.minimum(np.linalg.norm(estm_h1 - true_h1), np.linalg.norm(estm_h1 - true_h2))
-                    # err2 = np.minimum(np.linalg.norm(estm_h2 - true_h1), np.linalg.norm(estm_h2 - true_h2))
-
-                    err = np.maximum(err1, err2) / height
+                    err1 = (yl-yle)
+                    err2 = (yr-yre)
 
                     if np.abs(err1) > np.abs(err2):
                         err = err1
@@ -411,12 +293,8 @@ with torch.no_grad():
                     plt.autoscale(False)
 
                     l1.set_data([true_h1[0], true_h2[0]], [true_h1[1], true_h2[1]])
-                    # l1.set_data([0, yl], [im_width-1, yr])
-
                     if checkpoint_path is not None:
                         l2.set_data([estm_h1[0], estm_h2[0]], [estm_h1[1], estm_h2[1]])
-                        # l2.set_data([0, yle], [im_width-1, yre])
-
                         plt.suptitle("true: %.1f px, %.1f deg --- error: %.1f px, %.1f deg" %
                                      (offset, angle*180./np.pi, np.abs(offset-offset_estm),
                                       np.abs(angle-angle_estm)*180./np.pi), family='monospace', y=0.9)
@@ -424,10 +302,7 @@ with torch.no_grad():
                         plt.suptitle("%.1f px, %.1f deg" %
                                      (offset, angle*180./np.pi), family='monospace', y=0.9)
 
-                    # plt.show()
                     writer.grab_frame()
-                    # plt.clf()
-
 
         if args.video:
             plt.close()
@@ -441,7 +316,6 @@ with torch.no_grad():
             max_err = np.max(np.abs(all_errors_per_sequence))
 
             perc_values = np.percentile(np.abs(all_errors_per_sequence), percs)
-            # print(percs)
             for pv in perc_values: print("%.3f " % pv, end="")
             perc_values = np.percentile(np.abs(all_angular_errors_per_sequence), percs)
             print(" | ")
@@ -461,10 +335,6 @@ with torch.no_grad():
             print("abs_error_grad: %.9f" % abs_error_grad)
             error_grads += [error_gradient]
 
-        # print("mean, std, absmean, absstd, max: %.3f %.3f %.3f %.3f %.3f | corr: %.3f" %
-        #       (mean_err, stdd_err, mean_abserr, stdd_abserr, max_err, max_corr_off))
-
-        # print(all_offsets)
         plt.plot(x, all_offsets, '-', c='#99C000')
         if checkpoint_path is not None:
             plt.plot(x, all_offsets_estm, '-', c='#0083CC')
@@ -474,7 +344,6 @@ with torch.no_grad():
             errors = np.abs(all_offsets-all_offsets_estm)
             err_mean = np.mean(errors).squeeze()
             err_stdd = np.std(errors).squeeze()
-            # plt.suptitle("error mean: %.4f -- stdd: %.4f" % (err_mean, err_stdd))
             plt.suptitle("mean: %.4f - stdd: %.4f | mean, std, absmean, absstd: %.3f %.3f %.3f %.3f %.3f | corr: %.3f" %
                          (err_mean, err_stdd, mean_err, stdd_err, mean_abserr, stdd_abserr, max_err, max_corr_off), fontsize=8)
 
@@ -503,26 +372,12 @@ with torch.no_grad():
             errors = np.abs(all_angles-all_angles_estm)
             err_mean = np.mean(errors).squeeze()
             err_stdd = np.std(errors).squeeze()
-            # plt.suptitle("error mean: %.4f -- stdd: %.4f" % (err_mean, err_stdd))
             plt.suptitle("mean: %.4f - stdd: %.4f | mean, std, absmean, absstd: %.3f %.3f %.3f %.3f %.3f | corr: %.3f" %
                          (err_mean, err_stdd, mean_err, stdd_err, mean_abserr, stdd_abserr, max_err, max_corr_ang), fontsize=8)
 
         plt.savefig(os.path.join(png_folder, "angles_%03d.png" % idx), dpi=300)
         plt.savefig(os.path.join(svg_folder, "angles_%03d.svg" % idx), dpi=300)
         plt.close()
-
-        if args.features:
-            if feat is not None:
-                plt.figure()
-                x = np.arange(1, len(feature_similarities)+1)
-                feature_similarities = np.array(feature_similarities)
-                # print(all_offsets)
-                plt.plot(x, feature_similarities, '-', c='#99C000')
-                plt.ylim(-1, 1)
-
-                plt.savefig(os.path.join(png_folder, "features_%03d.png" % idx), dpi=300)
-                plt.savefig(os.path.join(svg_folder, "features_%03d.svg" % idx), dpi=300)
-                plt.close()
 
 print("%d images " % image_count)
 

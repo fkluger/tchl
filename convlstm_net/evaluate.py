@@ -1,6 +1,8 @@
 from convlstm_net.resnet_plus_lstm import resnet18rnn
 from utilities.tee import Tee
 from kitti_horizon.kitti_horizon_torch import KITTIHorizon
+from utilities.losses import calc_horizon_leftright
+from utilities.auc import *
 import torch
 from torchvision import transforms
 import os
@@ -15,29 +17,27 @@ logger.setLevel(logging.DEBUG)
 hostname = platform.node()
 import argparse
 import contextlib
-from utilities.auc import *
 import math
 np.seterr(all='raise')
 
 parser = argparse.ArgumentParser(description='')
-parser.add_argument('--load', default=None, type=str, help='path to latest checkpoint')
+parser.add_argument('--load', default=None, type=str, help='path to NN model weights')
 parser.add_argument('--results', default="./tmp/results", type=str, help='path to store results in')
-parser.add_argument('--dataset_path', default="/data/kluger/tmp/kitti_horizon_test", type=str, help='path to KITTI Horizon dataset')
+parser.add_argument('--dataset_path', default="/data/kluger/tmp/kitti_horizon", type=str, help='path to KITTI Horizon dataset')
 parser.add_argument('--set', default='val', type=str, help='dataset to evaluate on: val or test')
-parser.add_argument('--whole', dest='whole_sequence', action='store_true', help='')
-parser.add_argument('--video', dest='video', action='store_true', help='')
-parser.add_argument('--seqlength', default=10000, type=int, metavar='N', help='')
-parser.add_argument('--split', default=5, type=int, metavar='N', help='')
-parser.add_argument('--skip', dest='skip', action='store_true', help='')
-parser.add_argument('--fc', dest='fc', action='store_true', help='')
-parser.add_argument('--lstm_state_reduction', default=4., type=float, metavar='S', help='random subsampling factor')
-parser.add_argument('--lstm_depth', default=2, type=int, metavar='S', help='random subsampling factor')
-parser.add_argument('--cpu', dest='cpu', action='store_true', help='')
-parser.add_argument('--gpu', default='0', type=str, metavar='DS', help='dataset')
-parser.add_argument('--convlstm', dest='convlstm', action='store_true', help='')
+parser.add_argument('--whole', dest='whole_sequence', action='store_true', help='process whole sequence at once')
+parser.add_argument('--video', dest='video', action='store_true', help='generate video output (possibly very slow!)')
+parser.add_argument('--seqlength', default=10000, type=int, help='maximum frames per sequence')
+parser.add_argument('--skip', dest='skip', action='store_true', help='use ConvLSTM with skip connection')
+parser.add_argument('--fc', dest='fc', action='store_true', help='FC layers instead of ConvLSTM')
+parser.add_argument('--lstm_state_reduction', default=4., type=float, help='')
+parser.add_argument('--lstm_depth', default=2, type=int, help='number of stacked ConvLSTM cells')
+parser.add_argument('--cpu', dest='cpu', action='store_true', help='use CPU only')
+parser.add_argument('--gpu', default='0', type=str, help='which GPU to use')
+parser.add_argument('--convlstm', dest='convlstm', action='store_true', help='use ConvLSTM')
 parser.add_argument('--meanmodel', dest='meanmodel', action='store_true', help='')
-parser.add_argument('--tee', dest='tee', action='store_true', help='')
-parser.add_argument('--simple_skip', dest='simple_skip', action='store_true', help='')
+parser.add_argument('--tee', dest='tee', action='store_true', help='save console output to logfile')
+parser.add_argument('--simple_skip', dest='simple_skip', action='store_true', help='naive skip connection')
 parser.add_argument('--image_width', default=625, type=int, help='image width')
 parser.add_argument('--image_height', default=190, type=int, help='image height')
 
@@ -63,18 +63,6 @@ baseline_offset = -0.036219
 
 csv_base = "./kitti_horizon/split/"
 
-
-def calc_horizon_leftright(width, height):
-    wh = 0.5 * width
-
-    def f(offset, angle):
-        term2 = wh * torch.tan(torch.clamp(angle, -math.pi/3., math.pi/3.)).cpu().detach().numpy().squeeze()
-        offset = offset.cpu().detach().numpy().squeeze()
-        return height * offset + height * 0.5 + term2, height * offset + height * 0.5 - term2
-
-    return f
-
-
 if args.load is not None:
     model = resnet18rnn(use_fc=args.fc,
                         use_convlstm=args.convlstm,
@@ -85,9 +73,6 @@ if args.load is not None:
 
     print("load weights from ", args.load)
     checkpoint = torch.load(args.load, map_location=lambda storage, loc: storage)
-
-    for key in checkpoint['state_dict']:
-        print(key)
 
     model.load_state_dict(checkpoint['state_dict'], strict=True)
     model.eval()
@@ -279,10 +264,8 @@ with torch.no_grad():
                     G = np.matrix(Gs[si]).T
                     G /= np.linalg.norm(G)
 
-                    err1 = (yl-yle) / height
-                    err2 = (yr-yre) / height
-
-                    err = np.maximum(err1, err2) / height
+                    err1 = (yl-yle)
+                    err2 = (yr-yre)
 
                     if np.abs(err1) > np.abs(err2):
                         err = err1

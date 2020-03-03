@@ -1,12 +1,7 @@
 from torch.utils.data import Dataset
 import csv
-import pykitti
 import numpy as np
-import random
-import time
-import pickle
 from scipy import ndimage
-import glob
 import torch
 from torchvision import transforms
 import cv2
@@ -66,7 +61,7 @@ class HLWDataset(Dataset):
             rotation = np.random.uniform(-2, 2)
             max_shift = 0.
 
-            shift = (0,0,0)#(np.random.uniform(-max_shift, max_shift), np.random.uniform(-max_shift, max_shift), 0)
+            shift = (0,0,0)
 
             rot = -rotation / 180. * np.pi
             Tf = np.matrix([[1, 0, -self.width / 2.], [0, 1, -self.height / 2.], [0, 0, 1]])
@@ -81,12 +76,10 @@ class HLWDataset(Dataset):
             scale_hi = np.maximum(scale_h, scale_w)
             scale = np.random.uniform(scale_lo, scale_hi)
         else:
-            # scale = self.width * 1. / np.minimum(image.width, image.height)
             scale = self.width * 1./image.height
 
         new_width = int(np.around(image.width * scale))
         new_height = int(np.around(image.height * scale))
-        # print(new_height, new_width)
 
         horizon_coords[1] *= -1
         horizon_coords[3] *= -1
@@ -112,34 +105,29 @@ class HLWDataset(Dataset):
         lower = new_height
 
         if crop_margin_w > 0:
-            # left = crop_margin_w/2.
             left = np.random.randint(0, crop_margin_w) if self.augmentation else crop_margin_w/2.
             right = left + self.width
         if crop_margin_h > 0:
-            # upper = crop_margin_h/2.
             upper = np.random.randint(0, crop_margin_h) if self.augmentation else crop_margin_h/2.
             lower = upper + self.height
 
-        horizon_coords[0] -= left#/2. - (new_width-right)/2.
-        horizon_coords[2] -= left#/2. - (new_width-right)/2.
-        horizon_coords[1] -= upper#/2. - (new_height-lower)/2.
-        horizon_coords[3] -= upper#/2. - (new_height-lower)/2.
+        horizon_coords[0] -= left
+        horizon_coords[2] -= left
+        horizon_coords[1] -= upper
+        horizon_coords[3] -= upper
 
         image = image.crop((left, upper, right, lower))
 
         pad_w = self.width - image.width
         pad_h = self.height - image.height
-        # print("pad: ", pad_w, pad_h)
 
         if pad_w > 0:
-            # pad_w1 = int(pad_w/2)
             pad_w1 = np.random.randint(0, int(pad_w)) if self.augmentation else int(pad_w/2)
             pad_w2 = pad_w - pad_w1
         else:
             pad_w1 = 0
             pad_w2 = 0
         if pad_h > 0:
-            # pad_h1 = int(pad_h/2)
             pad_h1 = np.random.randint(0, int(pad_h)) if self.augmentation else int(pad_h/2)
             pad_h2 = pad_h - pad_h1
         else:
@@ -148,31 +136,19 @@ class HLWDataset(Dataset):
 
         padded_image = np.pad(np.array(image), ((pad_h1, pad_h2), (pad_w1, pad_w2), (0, 0)), 'edge')
 
-        horizon_coords[0] += pad_w1 #/2. - pad_w2/2.
-        horizon_coords[2] += pad_w1 #/2. - pad_w2/2.
-        horizon_coords[1] += pad_h1 #/2. - pad_h2/2.
-        horizon_coords[3] += pad_h1 #/2. - pad_h2/2.
+        horizon_coords[0] += pad_w1
+        horizon_coords[2] += pad_w1
+        horizon_coords[1] += pad_h1
+        horizon_coords[3] += pad_h1
 
         hp1 = np.array([horizon_coords[0], horizon_coords[1], 1.])
         hp2 = np.array([horizon_coords[2], horizon_coords[3], 1.])
-        # h = np.cross(hp1, hp2)
-        # hp1 = np.cross(h, np.array([1, 0, self.width/2]))
-        # hp2 = np.cross(h, np.array([1, 0, -self.width/2]))
-        # hp1 /= hp1[2]
-        # hp2 /= hp2[2]
-
-        # hp1 = np.array([hp1[0]+self.width/2, -hp1[1]+self.height/2, 1.])
-        # hp2 = np.array([hp2[0]+self.width/2, -hp2[1]+self.height/2, 1.])
-
         h = np.cross(hp1, hp2)
 
         hp1 = np.cross(h, np.array([1, 0, 0]))
         hp2 = np.cross(h, np.array([1, 0, -self.width]))
         hp1 /= hp1[2]
         hp2 /= hp2[2]
-
-
-        # print(offset, angle)
 
         if self.augmentation:
 
@@ -213,7 +189,6 @@ class HLWDataset(Dataset):
             image = np.transpose(padded_image, [2, 0, 1])
 
         images[0,:,:,:] = image
-        # sample = {'images': images, 'offsets': offsets, 'angles': angles}
 
         offsets[0,0] = offset
         angles[0,0] = angle
@@ -223,40 +198,6 @@ class HLWDataset(Dataset):
         return sample
 
 
-
-
-class Cutout(object):
-    def __init__(self, length, bias=False):
-        self.length = length
-        self.central_bias = bias
-
-    def __call__(self, img):
-        h, w = img.size(1), img.size(2)
-        mask = np.ones((h, w), np.float32)
-
-        if self.central_bias:
-            x = int(np.around(w/4. * np.random.rand(1) + w/2.))
-            y = int(np.around(h/4. * np.random.rand(1) + h/2.))
-
-        else:
-            y = np.random.randint(h)
-            x = np.random.randint(w)
-
-        lx = np.random.randint(1, self.length)
-        ly = np.random.randint(1, self.length)
-
-        y1 = np.clip(y - ly // 2, 0, h)
-        y2 = np.clip(y + ly // 2, 0, h)
-        x1 = np.clip(x - lx // 2, 0, w)
-        x2 = np.clip(x + lx // 2, 0, w)
-
-        mask[y1: y2, x1: x2] = 0.
-        mask = torch.from_numpy(mask)
-        mask = mask.expand_as(img)
-        img *= mask
-        return img
-
-
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
@@ -264,17 +205,14 @@ if __name__ == "__main__":
         transforms.ToTensor()
     ])
 
-    dataset1 = HLWDataset("/data/scene_understanding/HLW/", set='train', augmentation=True, transform=tfs)
-    # dataset2 = HLWDataset("/data/scene_understanding/HLW/", set='train', augmentation=True, transform=tfs)
-
-    # print("dataset size: ", len(dataset))
+    dataset = HLWDataset("/tnt/data/scene_understanding/HLW/", set='train', augmentation=True, transform=tfs)
 
     all_offsets = []
     all_angles = []
 
-    for idx, sample in enumerate(dataset1):
-        # if idx > 50: break
-        print(idx+1, " / ", len(dataset1))
+    for idx, sample in enumerate(dataset):
+
+        print(idx + 1, " / ", len(dataset))
         images = sample['images']
         offsets = sample['offsets']
         angles = sample['angles']
@@ -305,8 +243,6 @@ if __name__ == "__main__":
         plt.plot([true_h1[0], true_h2[0]], [true_h1[1], true_h2[1]], 'g-', lw=2)
         plt.show()
 
-        exit(0)
-
     angle_mean = np.mean(all_angles)
     angle_std = np.std(all_angles)
     angle_min = np.min(all_angles)
@@ -321,31 +257,3 @@ if __name__ == "__main__":
     n, bins, patches = plt.hist(all_angles, 100, density=True, facecolor='g', alpha=0.75)
     plt.show()
 
-
-        # images = sample2['images']
-        # offsets = sample2['offsets']
-        # angles = sample2['angles']
-        # image = images[0, :, :, :].transpose((1, 2, 0))
-        # width = image.shape[1]
-        # height = image.shape[0]
-        #
-        # offset = offsets.squeeze()
-        # offset += 0.5
-        # offset *= height
-        # angle = angles.squeeze()
-        #
-        # true_mp = np.array([width / 2., offset])
-        # true_nv = np.array([np.sin(angle), np.cos(angle)])
-        # true_hl = np.array([true_nv[0], true_nv[1], -np.dot(true_nv, true_mp)])
-        # true_h1 = np.cross(true_hl, np.array([1, 0, 0]))
-        # true_h2 = np.cross(true_hl, np.array([1, 0, -width]))
-        # true_h1 /= true_h1[2]
-        # true_h2 /= true_h2[2]
-        #
-        # plt.figure()
-        # plt.imshow(image)
-        # plt.autoscale(False)
-        # plt.plot([true_h1[0], true_h2[0]], [true_h1[1], true_h2[1]], 'g-', lw=4)
-        # plt.show()
-
-        # exit(0)

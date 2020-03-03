@@ -7,8 +7,10 @@ from convlstm_net.convlstm import *
 class ConvLSTMHead(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, skip, bias, depth,
-                 simple_skip):
+                 simple_skip, lstm_mem):
         super(ConvLSTMHead, self).__init__()
+
+        self.lstm_mem = lstm_mem
 
         self.conv_lstm = ConvLSTMCellGeneral(input_dim=input_dim,
                                              hidden_dim=hidden_dim,
@@ -67,6 +69,11 @@ class ConvLSTMHead(nn.Module):
                     h_state, c_state, y_step = conv_lstm(x[:, s, :, :, :], (h_state, c_state))
                 else:
                     h_state, c_state, y_step = conv_lstm(y_outputs[-1][s], (h_state, c_state))
+
+                if not self.lstm_mem:
+                    h_state = self.lstm_init_h.view(1, -1, 1, 1).expand(B, -1, H, W)
+                    c_state = self.lstm_init_c.view(1, -1, 1, 1).expand(B, -1, H, W)
+                    
                 h_states.append(y_step)
 
             y_outputs.append(h_states.copy())
@@ -156,7 +163,7 @@ class ResNetPlusLSTM(resnet.ResNet):
 
     def __init__(self, block, layers, finetune=True, use_fc=False, use_convlstm=False, lstm_skip=False,
                  lstm_bias=False, lstm_state_reduction=1., lstm_depth=1,
-                 lstm_simple_skip=False):
+                 lstm_simple_skip=False, lstm_mem=True):
 
         super().__init__(block, layers)
 
@@ -190,7 +197,7 @@ class ResNetPlusLSTM(resnet.ResNet):
 
         if use_convlstm:
             self.head = ConvLSTMHead(input_dim=planes, hidden_dim=int(planes / lstm_state_reduction), skip=lstm_skip,
-                                     bias=lstm_bias, depth=lstm_depth, simple_skip=lstm_simple_skip)
+                                     bias=lstm_bias, depth=lstm_depth, simple_skip=lstm_simple_skip, lstm_mem=lstm_mem)
 
         else:
             self.head = FCHead(input_dim=512 * block.expansion,
